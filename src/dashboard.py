@@ -52,7 +52,7 @@ if tipo_maquina == "Torno CNC / Fresadora (Vibración de Rodamiento)":
             "Kurtosis (Impactos)", value=0.62, format="%.4f")
         skew_val = st.number_input("Skewness", value=0.08, format="%.4f")
 
-    endpoint = "http://127.0.0.1:8000/predict/bearing"
+    endpoint = "https://aurapredict-api.onrender.com/predict/bearing"
     payload = {"RMS": rms_val, "Peak_to_Peak": p2p_val,
                "Kurtosis": kurt_val, "Skewness": skew_val}
 
@@ -70,7 +70,7 @@ elif tipo_maquina == "Prensa de Extrusión de Aluminio":
         aceite = st.number_input("Partículas Aceite (ISO)", value=14,
                                  format="%d", help="Contaminación sólida en tanque")
 
-    endpoint = "http://127.0.0.1:8000/predict/extrusion_press"
+    endpoint = "https://aurapredict-api.onrender.com/predict/extrusion_press"
     payload = {"Desviacion_Columnas_uE": columnas,
                "Vibracion_Bomba_AltaFrec_dB": bomba, "Particulas_Aceite_ISO": aceite}
 
