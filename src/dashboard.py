@@ -1,5 +1,20 @@
 import streamlit as st
 import requests
+import threading
+
+# --- DESPIERTA LA API AL ACCEDER AL DASHBOARD ---
+
+
+def despertar_api():
+    try:
+        # Hacemos una llamada a la raíz ("/") solo para que Render arranque el servidor.
+        requests.get("https://aurapredict-api.onrender.com/", timeout=2)
+    except:
+        pass
+
+
+# Lanzamos el despertador en un hilo secundario para no congelar la pantalla del usuario
+threading.Thread(target=despertar_api).start()
 
 st.set_page_config(page_title="AuraPredict", page_icon="⚙️", layout="centered")
 # st.title("AuraPredict: Mantenimiento Predictivo")
