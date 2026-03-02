@@ -8,7 +8,7 @@ import threading
 def despertar_api():
     try:
         # Hacemos una llamada a la raíz ("/") solo para que Render arranque el servidor.
-        requests.get("https://aurapredict-api.onrender.com/", timeout=2)
+        requests.get("https://aurapredict-api.onrender.com/", timeout=5)
     except:
         pass
 
@@ -94,7 +94,7 @@ st.markdown("---")
 # --- BOTÓN DE EJECUCIÓN ---
 if st.button("🔍 Analizar Estado del Activo", use_container_width=True):
     try:
-        respuesta = requests.post(endpoint, json=payload)
+        respuesta = requests.post(endpoint, json=payload, timeout=60)
 
         if respuesta.status_code == 200:
             resultado = respuesta.json()
