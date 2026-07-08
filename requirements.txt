@@ -5,3 +5,5 @@ pandas
 scikit-learn
 streamlit
 requests
+numpy
+scipy

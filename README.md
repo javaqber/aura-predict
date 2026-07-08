@@ -61,18 +61,24 @@ cd aura-predict
     pip install -r requirements.txt
 ```
 
-4. Ejecutar los servicios (Requiere dos terminales):
+4. Ejecutar los servicios (Requiere tres terminales):
 
 - **Terminal 1(API REST)**
 
 ```bash
-    python -m uvicorn src.api:app --reload
+    python uvicorn api:app --reload --port 8000 --app-dir src
 ```
 
 - **Terminal 2(Dashboard Web)**
 
 ```bash
     python -m streamlit run src/dashboard.py
+```
+
+- **Terminal 3 — Simulador (opcional, para generar datos de prueba)**
+
+```bash
+    python src/simulador.py
 ```
 
 ## 📡 Ejemplo de Interacción API
