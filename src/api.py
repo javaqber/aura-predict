@@ -1,6 +1,6 @@
 from alertas import enviar_alerta
 from diagnostico import diagnosticar_rodamiento
-from database import guardar_lectura_rodamiento, guardar_lectura_prensa
+from database import guardar_lectura_rodamiento, guardar_lectura_prensa, obtener_emails_maquina
 import pandas as pd
 import joblib
 from pydantic import BaseModel
@@ -11,13 +11,6 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '../.env'))
-
-# DEBUG TEMPORAL — borrar después de verificar
-print("EMAIL_ACTIVO:", os.getenv("EMAIL_ACTIVO"))
-print("EMAIL_ORIGEN:", os.getenv("EMAIL_ORIGEN"))
-print("EMAIL_DESTINO:", os.getenv("EMAIL_DESTINO"))
-print("CONTRASENA cargada:", "SÍ" if os.getenv("EMAIL_CONTRASENA") else "NO")
-
 
 app = FastAPI(
     title="AuraPredict API",
@@ -96,6 +89,7 @@ def predecir_rodamiento(datos: DatosVibracion):
 
     # Enviar alerta ANTES del return
     if prediccion != 1:
+        emails_cliente = obtener_emails_maquina(datos.maquina)
         enviar_alerta(
             maquina=datos.maquina,
             estado=estado,
@@ -106,7 +100,8 @@ def predecir_rodamiento(datos: DatosVibracion):
                 "Peak_to_Peak": datos.Peak_to_Peak,
                 "Kurtosis":     datos.Kurtosis,
                 "Skewness":     datos.Skewness
-            }
+            },
+            destinatarios_extra=emails_cliente
         )
 
     return {

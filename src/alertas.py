@@ -110,47 +110,57 @@ def _construir_email(maquina, estado, riesgo, diagnostico, valores):
     return cuerpo_html
 
 
-def enviar_alerta(maquina, estado, riesgo, diagnostico, valores):
-    # Leer credenciales aquí, no al importar el módulo
+def enviar_alerta(maquina, estado, riesgo, diagnostico, valores, destinatarios_extra=None):
     email_activo = os.getenv("EMAIL_ACTIVO", "false").lower() == "true"
     email_origen = os.getenv("EMAIL_ORIGEN", "")
     email_contrasena = os.getenv("EMAIL_CONTRASENA", "")
-    email_destino = os.getenv("EMAIL_DESTINO", "")
+    email_admin = os.getenv("EMAIL_DESTINO", "")  # siempre recibe tú
 
     if not email_activo:
         return
-
-    if not email_origen or not email_contrasena or not email_destino:
+    if not email_origen or not email_contrasena:
         print("⚠️  Alertas email: faltan credenciales en el archivo .env")
         return
-
     if diagnostico.get("nivel_urgencia") == "verde":
         return
-
     if not _puede_enviar(maquina):
         print(
             f"  📧 Alerta omitida para {maquina} (ya se envió hace menos de 1h)")
         return
 
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = (
-            f"🚨 AuraPredict — {diagnostico.get('tipo_fallo', 'Anomalía')} "
-            f"en {maquina}"
-        )
-        msg["From"] = email_origen
-        msg["To"] = email_destino
+    # Construir lista final de destinatarios sin duplicados
+    todos = set()
+    if email_admin:
+        todos.add(email_admin)
+    if destinatarios_extra:
+        todos.update(destinatarios_extra)
 
+    if not todos:
+        print("⚠️  No hay destinatarios configurados para esta máquina.")
+        return
+
+    try:
         cuerpo_html = _construir_email(
             maquina, estado, riesgo, diagnostico, valores)
-        msg.attach(MIMEText(cuerpo_html, "html"))
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as servidor:
-            servidor.login(email_origen, email_contrasena)
-            servidor.sendmail(email_origen, email_destino, msg.as_string())
+        for destinatario in todos:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = (
+                f"🚨 AuraPredict — {diagnostico.get('tipo_fallo', 'Anomalía')} "
+                f"en {maquina}"
+            )
+            msg["From"] = email_origen
+            msg["To"] = destinatario
+            msg.attach(MIMEText(cuerpo_html, "html"))
+
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as servidor:
+                servidor.login(email_origen, email_contrasena)
+                servidor.sendmail(email_origen, destinatario, msg.as_string())
+
+            print(
+                f"  📧 Alerta enviada a {destinatario} para máquina {maquina}")
 
         _ultimo_envio[maquina] = datetime.now().timestamp()
-        print(f"  📧 Alerta enviada a {email_destino} para máquina {maquina}")
 
     except Exception as e:
         print(f"  ❌ Error al enviar email: {e}")

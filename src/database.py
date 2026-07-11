@@ -17,7 +17,8 @@ def init_db():
         "tipo TEXT NOT NULL,"
         "descripcion TEXT,"
         "ubicacion TEXT,"
-        "fecha_registro TEXT NOT NULL)"
+        "fecha_registro TEXT NOT NULL,"
+        "emails_alerta TEXT DEFAULT '')"
     )
 
     cursor.execute(
@@ -30,7 +31,8 @@ def init_db():
         "kurtosis REAL,"
         "skewness REAL,"
         "resultado TEXT NOT NULL,"
-        "nivel_riesgo TEXT NOT NULL)"
+        "nivel_riesgo TEXT NOT NULL,"
+        "diagnostico TEXT DEFAULT '')"
     )
 
     cursor.execute(
@@ -45,19 +47,32 @@ def init_db():
         "nivel_riesgo TEXT NOT NULL)"
     )
 
+    # Migraciones — añaden columnas a tablas existentes si no están
+    migraciones = [
+        "ALTER TABLE maquinas ADD COLUMN emails_alerta TEXT DEFAULT ''",
+        "ALTER TABLE lecturas_rodamiento ADD COLUMN diagnostico TEXT DEFAULT ''"
+    ]
+    for sql in migraciones:
+        try:
+            cursor.execute(sql)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # La columna ya existe
+
     conn.commit()
     conn.close()
 
 
 # --- GESTION DE MAQUINAS ---
 
-def registrar_maquina(nombre, tipo, descripcion, ubicacion):
+def registrar_maquina(nombre, tipo, descripcion, ubicacion, emails_alerta=""):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     sql = ("INSERT INTO maquinas (nombre, tipo, descripcion, ubicacion, fecha_registro) "
            "VALUES (?, ?, ?, ?, ?)")
     valores = (nombre, tipo, descripcion, ubicacion,
-               datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+               datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+               emails_alerta)
     try:
         cursor.execute(sql, valores)
         conn.commit()
@@ -91,6 +106,20 @@ def obtener_maquina(nombre):
     fila = cursor.fetchone()
     conn.close()
     return fila
+
+
+def obtener_emails_maquina(nombre):
+    """Devuelve la lista de emails de alerta de una máquina."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT emails_alerta FROM maquinas WHERE nombre = ?", (nombre,))
+    fila = cursor.fetchone()
+    conn.close()
+    if not fila or not fila[0]:
+        return []
+    # Los emails se guardan separados por coma: "a@b.com,c@d.com"
+    return [e.strip() for e in fila[0].split(",") if e.strip()]
 
 
 def eliminar_maquina(nombre):

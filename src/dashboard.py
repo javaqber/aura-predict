@@ -79,6 +79,9 @@ with st.sidebar:
                 "Descripción", placeholder="Ej: Torno 2 ejes, Zona A")
             n_ubic = st.text_input("Ubicación en planta",
                                    placeholder="Ej: Nave 2, Línea 3")
+            n_emails = st.text_input("Emails de alerta", placeholder="cliente@empresa.com, responsable@empresa.com",
+                                     help="Separados por coma. Recibiran el email cuando se detecte una anomalía.")
+
             guardar = st.form_submit_button(
                 "Registrar", use_container_width=True)
 
