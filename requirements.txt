@@ -3,7 +3,9 @@ uvicorn
 pydantic
 pandas
 scikit-learn
+joblib
 streamlit
 requests
 numpy
 scipy
+python-dotenv

@@ -1,12 +1,22 @@
+from alertas import enviar_alerta
 from diagnostico import diagnosticar_rodamiento
 from database import guardar_lectura_rodamiento, guardar_lectura_prensa
 import pandas as pd
 import joblib
 from pydantic import BaseModel
 from fastapi import FastAPI
+from dotenv import load_dotenv
 import os
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '../.env'))
+
+# DEBUG TEMPORAL — borrar después de verificar
+print("EMAIL_ACTIVO:", os.getenv("EMAIL_ACTIVO"))
+print("EMAIL_ORIGEN:", os.getenv("EMAIL_ORIGEN"))
+print("EMAIL_DESTINO:", os.getenv("EMAIL_DESTINO"))
+print("CONTRASENA cargada:", "SÍ" if os.getenv("EMAIL_CONTRASENA") else "NO")
 
 
 app = FastAPI(
@@ -29,18 +39,18 @@ except Exception as e:
 # --- ESQUEMAS ---
 
 class DatosVibracion(BaseModel):
-    maquina:       str = "Torno_CNC_1"
-    RMS:           float
-    Peak_to_Peak:  float
-    Kurtosis:      float
-    Skewness:      float
+    maquina:      str = "Torno_CNC_1"
+    RMS:          float
+    Peak_to_Peak: float
+    Kurtosis:     float
+    Skewness:     float
 
 
 class DatosPrensaExtrusion(BaseModel):
-    maquina:                    str = "Prensa_1"
-    Desviacion_Columnas_uE:     float
+    maquina:                     str = "Prensa_1"
+    Desviacion_Columnas_uE:      float
     Vibracion_Bomba_AltaFrec_dB: float
-    Particulas_Aceite_ISO:      int
+    Particulas_Aceite_ISO:       int
 
 
 # --- ENDPOINTS ---
@@ -83,6 +93,21 @@ def predecir_rodamiento(datos: DatosVibracion):
         nivel_riesgo=riesgo,
         diagnostico=diagnostico["tipo_fallo"]
     )
+
+    # Enviar alerta ANTES del return
+    if prediccion != 1:
+        enviar_alerta(
+            maquina=datos.maquina,
+            estado=estado,
+            riesgo=riesgo,
+            diagnostico=diagnostico,
+            valores={
+                "RMS":          datos.RMS,
+                "Peak_to_Peak": datos.Peak_to_Peak,
+                "Kurtosis":     datos.Kurtosis,
+                "Skewness":     datos.Skewness
+            }
+        )
 
     return {
         "maquina":        datos.maquina,

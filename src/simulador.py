@@ -18,7 +18,7 @@ TOTAL_CICLOS = 0                   # 0 = infinito, N = parar tras N lecturas
 # "sano"      → genera datos de maquina en buen estado
 # "degradado" → simula un rodamiento que se va deteriorando progresivamente
 # "fallo"     → genera datos de fallo claro
-MODO = "degradado"
+MODO = "fallo"
 
 # ─── GENERADOR DE DATOS ───────────────────────────────────────────────────────
 
