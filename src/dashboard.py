@@ -529,6 +529,87 @@ else:
                 st.line_chart(df.set_index("Timestamp")["Kurtosis"])
             with st.expander("Ver tabla completa"):
                 st.dataframe(df, use_container_width=True)
+            # --- EXPORTACIÓN EXCEL RODAMIENTO ---
+            st.markdown("---")
+            st.subheader("📥 Exportar Historial")
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                fecha_inicio = st.date_input(
+                    "Desde",
+                    value=pd.Timestamp.now() - pd.Timedelta(days=30),
+                    key="fecha_ini_rod"
+                )
+            with col_f2:
+                fecha_fin = st.date_input(
+                    "Hasta",
+                    value=pd.Timestamp.now(),
+                    key="fecha_fin_rod"
+                )
+
+            if st.button("Generar Excel", key="excel_rod", use_container_width=True):
+                historial_completo = obtener_historial_rodamiento(
+                    nombre, limite=10000)
+                if not historial_completo:
+                    st.warning("No hay datos para exportar.")
+                else:
+                    df_export = pd.DataFrame(
+                        historial_completo,
+                        columns=["Timestamp", "RMS", "Kurtosis",
+                                 "Peak_to_Peak", "Resultado", "Diagnostico"]
+                    )
+                    df_export["Timestamp"] = pd.to_datetime(
+                        df_export["Timestamp"])
+                    mask = (
+                        (df_export["Timestamp"].dt.date >= fecha_inicio) &
+                        (df_export["Timestamp"].dt.date <= fecha_fin)
+                    )
+                    df_filtrado = df_export[mask]
+
+                    if df_filtrado.empty:
+                        st.warning("No hay datos en ese rango de fechas.")
+                    else:
+                        import io
+                        buffer = io.BytesIO()
+                        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                            df_filtrado.to_excel(
+                                writer, index=False, sheet_name="Historial")
+
+                            total = len(df_filtrado)
+                            total_ok = len(
+                                df_filtrado[df_filtrado["Resultado"].str.contains("OK - Sano", na=False)])
+                            total_nok = len(
+                                df_filtrado[df_filtrado["Resultado"].str.contains("NOK", na=False)])
+
+                            resumen = pd.DataFrame({
+                                "Concepto": [
+                                    "Máquina", "Tipo", "Periodo",
+                                    "Total lecturas", "Lecturas OK",
+                                    "Lecturas NOK", "% Disponibilidad"
+                                ],
+                                "Valor": [
+                                    nombre, "Rodamiento / Torno CNC",
+                                    f"{fecha_inicio} → {fecha_fin}",
+                                    total, total_ok, total_nok,
+                                    f"{round(total_ok / total * 100, 1)}%" if total > 0 else "—"
+                                ]
+                            })
+                            resumen.to_excel(
+                                writer, index=False, sheet_name="Resumen")
+
+                        buffer.seek(0)
+                        nombre_archivo = f"AuraPredict_{nombre}_{fecha_inicio}_{fecha_fin}.xlsx"
+                        st.download_button(
+                            label="⬇️ Descargar Excel",
+                            data=buffer,
+                            file_name=nombre_archivo,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True
+                        )
+                        st.success(
+                            f"✅ {len(df_filtrado)} lecturas entre "
+                            f"{fecha_inicio} y {fecha_fin}. "
+                            f"Disponibilidad: {round(total_ok / total * 100, 1) if total > 0 else 0}%"
+                        )
     else:
         historial = obtener_historial_prensa(nombre, limite=50)
         if not historial:
@@ -550,3 +631,84 @@ else:
                 st.line_chart(df.set_index("Timestamp")["Particulas_ISO"])
             with st.expander("Ver tabla completa"):
                 st.dataframe(df, use_container_width=True)
+            # --- EXPORTACIÓN EXCEL PRENSA ---
+            st.markdown("---")
+            st.subheader("📥 Exportar Historial")
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                fecha_inicio = st.date_input(
+                    "Desde",
+                    value=pd.Timestamp.now() - pd.Timedelta(days=30),
+                    key="fecha_ini_prensa"
+                )
+            with col_f2:
+                fecha_fin = st.date_input(
+                    "Hasta",
+                    value=pd.Timestamp.now(),
+                    key="fecha_fin_prensa"
+                )
+
+            if st.button("Generar Excel", key="excel_prensa", use_container_width=True):
+                historial_completo = obtener_historial_prensa(
+                    nombre, limite=10000)
+                if not historial_completo:
+                    st.warning("No hay datos para exportar.")
+                else:
+                    df_export = pd.DataFrame(
+                        historial_completo,
+                        columns=["Timestamp", "Desviacion_uE",
+                                 "Vibracion_dB", "Particulas_ISO", "Resultado"]
+                    )
+                    df_export["Timestamp"] = pd.to_datetime(
+                        df_export["Timestamp"])
+                    mask = (
+                        (df_export["Timestamp"].dt.date >= fecha_inicio) &
+                        (df_export["Timestamp"].dt.date <= fecha_fin)
+                    )
+                    df_filtrado = df_export[mask]
+
+                    if df_filtrado.empty:
+                        st.warning("No hay datos en ese rango de fechas.")
+                    else:
+                        import io
+                        buffer = io.BytesIO()
+                        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                            df_filtrado.to_excel(
+                                writer, index=False, sheet_name="Historial")
+
+                            total = len(df_filtrado)
+                            total_ok = len(
+                                df_filtrado[df_filtrado["Resultado"].str.contains("OK", na=False)])
+                            total_nok = len(
+                                df_filtrado[df_filtrado["Resultado"].str.contains("NOK", na=False)])
+
+                            resumen = pd.DataFrame({
+                                "Concepto": [
+                                    "Máquina", "Tipo", "Periodo",
+                                    "Total lecturas", "Lecturas OK",
+                                    "Lecturas NOK", "% Disponibilidad"
+                                ],
+                                "Valor": [
+                                    nombre, "Prensa Hidráulica",
+                                    f"{fecha_inicio} → {fecha_fin}",
+                                    total, total_ok, total_nok,
+                                    f"{round(total_ok / total * 100, 1)}%" if total > 0 else "—"
+                                ]
+                            })
+                            resumen.to_excel(
+                                writer, index=False, sheet_name="Resumen")
+
+                        buffer.seek(0)
+                        nombre_archivo = f"AuraPredict_{nombre}_{fecha_inicio}_{fecha_fin}.xlsx"
+                        st.download_button(
+                            label="⬇️ Descargar Excel",
+                            data=buffer,
+                            file_name=nombre_archivo,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True
+                        )
+                        st.success(
+                            f"✅ {len(df_filtrado)} lecturas entre "
+                            f"{fecha_inicio} y {fecha_fin}. "
+                            f"Disponibilidad: {round(total_ok / total * 100, 1) if total > 0 else 0}%"
+                        )
