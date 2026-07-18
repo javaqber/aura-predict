@@ -1,10 +1,21 @@
 from diagnostico import diagnosticar_rodamiento
 from database import (
-    guardar_lectura_rodamiento, guardar_lectura_prensa,
-    obtener_historial_rodamiento, obtener_historial_prensa,
+    init_db,
+    guardar_lectura_rodamiento,
+    guardar_lectura_prensa,
+    obtener_historial_rodamiento,
+    obtener_historial_prensa,
+    registrar_maquina,
+    obtener_maquinas_por_empresa,
+    obtener_maquina,
+    eliminar_maquina,
     contar_lecturas_rodamiento,
-    registrar_maquina, obtener_maquinas, obtener_maquina, eliminar_maquina,
-    obtener_maquinas_por_empresa, obtener_empresas
+    crear_empresa,
+    obtener_empresas,
+    crear_usuario,
+    obtener_usuarios,
+    asignar_empresa_maquina,
+    obtener_ultima_lectura
 )
 import joblib
 import pandas as pd
@@ -33,7 +44,7 @@ for key, val in {
 # --- MODELO ---
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def cargar_modelo():
     ruta = os.path.join(os.path.dirname(__file__),
                         '../models/rodamientos_mecanizado.joblib')
@@ -44,6 +55,31 @@ def cargar_modelo():
         return joblib.load(ruta_alt)
     return None
 
+
+# --- SPLASH SCREEN (solo primera carga) ---
+if "app_lista" not in st.session_state:
+    _ph = st.empty()
+    with _ph.container():
+        st.markdown("""
+            <div style="display:flex;flex-direction:column;align-items:center;
+                        justify-content:center;min-height:80vh;text-align:center;">
+                <h1 style="font-size:5rem;font-weight:900;color:#0A192F;margin-bottom:0;">
+                    <span style="color:#0B3D91;">Aura</span>Predict
+                </h1>
+                <p style="color:#666;font-size:1.2rem;margin-top:12px;margin-bottom:48px;">
+                    Monitorización Predictiva Industrial
+                </p>
+                <div style="color:#0B3D91;font-size:1.05rem;letter-spacing:0.05em;">
+                    ⚙️ &nbsp;&nbsp;Iniciando sistema de inteligencia artificial...
+                </div>
+                <div style="margin-top:16px;color:#bbb;font-size:0.82rem;">
+                    Este proceso solo ocurre la primera vez
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+    cargar_modelo()
+    st.session_state.app_lista = True
+    _ph.empty()
 
 modelo_ia = cargar_modelo()
 
@@ -230,7 +266,8 @@ with st.sidebar:
         st.markdown("---")
         st.markdown("### ⚙️ Administración")
 
-        tab_empresas, tab_usuarios = st.tabs(["Empresas", "Usuarios"])
+        tab_empresas, tab_usuarios, tab_maquinas = st.tabs(
+            ["Empresas", "Usuarios", "Máquinas"])
 
         with tab_empresas:
             st.markdown("**Empresas registradas:**")
@@ -322,6 +359,56 @@ with st.sidebar:
                         </div>
                     """, unsafe_allow_html=True)
 
+        with tab_maquinas:
+            st.markdown("**Gestión de Máquinas**")
+
+            maquinas_todas = obtener_maquinas_por_empresa(None)
+            empresas_lista = obtener_empresas()
+            empresas_dict = {e[0]: e[1] for e in empresas_lista}
+
+            if not maquinas_todas:
+                st.info("No hay máquinas registradas.")
+            else:
+                for m in maquinas_todas:
+                    nombre_m = m[1]
+                    tipo_m = m[2]
+                    empresa_id_m = m[7] if len(m) > 7 else None
+                    empresa_nombre = empresas_dict.get(
+                        empresa_id_m, "⚠️ Sin asignar")
+
+                    ultima = obtener_ultima_lectura(nombre_m, tipo_m)
+                    if ultima:
+                        resultado_m = ultima[0]
+                        es_ok = "NOK" not in resultado_m
+                        simbolo = "✅" if es_ok else "🚨"
+                    else:
+                        simbolo = "❓"
+
+                    with st.expander(f"{simbolo} {nombre_m} — {empresa_nombre}"):
+                        st.write(f"**Tipo:** {tipo_m}")
+                        st.write(f"**Empresa actual:** {empresa_nombre}")
+
+                        opciones = ["Sin asignar"] + [e[1]
+                                                      for e in empresas_lista]
+                        seleccion = st.selectbox(
+                            "Asignar a empresa",
+                            opciones,
+                            key=f"asignar_{nombre_m}"
+                        )
+
+                        if st.button("Guardar asignación", key=f"btn_asignar_{nombre_m}"):
+                            if seleccion == "Sin asignar":
+                                asignar_empresa_maquina(nombre_m, None)
+                                st.success("Máquina desasignada.")
+                            else:
+                                nueva_empresa_id = next(
+                                    e[0] for e in empresas_lista if e[1] == seleccion
+                                )
+                                asignar_empresa_maquina(
+                                    nombre_m, nueva_empresa_id)
+                                st.success(f"Asignada a {seleccion}.")
+                            st.rerun()
+
 # ================================================================
 # MAIN — TÍTULO
 # ================================================================
@@ -341,12 +428,69 @@ st.markdown("---")
 # MAIN — SIN MÁQUINA SELECCIONADA
 # ================================================================
 if st.session_state.maquina_activa is None:
-    st.markdown("""
-        <div style="text-align:center; padding:60px 0;">
-            <h3 style="color:#666;">👈 Selecciona o registra una máquina desde el panel lateral</h3>
-            <p style="color:#999;">Cada máquina mantiene su propio historial independiente.</p>
-        </div>
-    """, unsafe_allow_html=True)
+    if st.session_state.rol == "admin":
+        st.title("📊 Estado Global de Máquinas")
+
+        maquinas_todas = obtener_maquinas_por_empresa(None)
+        empresas_lista = obtener_empresas()
+        empresas_dict = {e[0]: e[1] for e in empresas_lista}
+
+        if not maquinas_todas:
+            st.info("No hay máquinas registradas aún.")
+        else:
+            ok_count = 0
+            nok_count = 0
+            sin_datos = 0
+            filas = []
+
+            for m in maquinas_todas:
+                nombre_m = m[1]
+                tipo_m = m[2]
+                empresa_id_m = m[7] if len(m) > 7 else None
+                empresa_nombre = empresas_dict.get(empresa_id_m, "Sin asignar")
+
+                ultima = obtener_ultima_lectura(nombre_m, tipo_m)
+                if ultima:
+                    resultado_m, nivel_riesgo_m, timestamp_m = ultima
+                    es_ok = "NOK" not in resultado_m
+                    simbolo = "✅ OK" if es_ok else "🚨 NOK"
+                    tiempo = timestamp_m.strftime(
+                        "%d/%m/%Y %H:%M") if hasattr(timestamp_m, "strftime") else str(timestamp_m)
+                    if es_ok:
+                        ok_count += 1
+                    else:
+                        nok_count += 1
+                else:
+                    simbolo = "❓ Sin datos"
+                    nivel_riesgo_m = "—"
+                    tiempo = "—"
+                    sin_datos += 1
+
+                filas.append({
+                    "Estado":         simbolo,
+                    "Máquina":        nombre_m,
+                    "Tipo":           tipo_m,
+                    "Empresa":        empresa_nombre,
+                    "Última lectura": tiempo,
+                    "Nivel riesgo":   nivel_riesgo_m if nivel_riesgo_m else "—"
+                })
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total máquinas", len(maquinas_todas))
+            col2.metric("✅ OK",          ok_count)
+            col3.metric("🚨 NOK",         nok_count)
+            col4.metric("❓ Sin datos",    sin_datos)
+
+            st.markdown("---")
+            df = pd.DataFrame(filas)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.markdown("""
+            <div style="text-align:center; padding:60px 0;">
+                <h3 style="color:#666;">👈 Selecciona o registra una máquina desde el panel lateral</h3>
+                <p style="color:#999;">Cada máquina mantiene su propio historial independiente.</p>
+            </div>
+        """, unsafe_allow_html=True)
 
 # ================================================================
 # MAIN — CON MÁQUINA SELECCIONADA

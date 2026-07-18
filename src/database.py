@@ -401,4 +401,25 @@ def registrar_maquina(nombre, tipo, descripcion, ubicacion,
         conn.close()
 
 
+def obtener_ultima_lectura(nombre_maquina, tipo):
+    """Obtiene el resultado de la última lectura de una máquina."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        tabla = "lecturas_rodamiento" if tipo == "rodamiento" else "lecturas_prensa"
+        cur.execute(f"""
+            SELECT resultado, nivel_riesgo, timestamp
+            FROM {tabla}
+            WHERE maquina = %s
+            ORDER BY timestamp DESC LIMIT 1
+        """, (nombre_maquina,))
+        return cur.fetchone()
+    except Exception as e:
+        print(f"Error obteniendo última lectura: {e}")
+        return None
+    finally:
+        cur.close()
+        conn.close()
+
+
 init_db()
