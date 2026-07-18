@@ -1,10 +1,15 @@
 from alertas import enviar_alerta
 from diagnostico import diagnosticar_rodamiento
-from database import guardar_lectura_rodamiento, guardar_lectura_prensa, obtener_emails_maquina
+from database import (
+    guardar_lectura_rodamiento, guardar_lectura_prensa,
+    obtener_emails_maquina, obtener_usuario_por_email
+)
+from auth import crear_token, verificar_token, verificar_password
 import pandas as pd
 import joblib
 from pydantic import BaseModel
-from fastapi import FastAPI
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI, Depends, HTTPException, status
 from dotenv import load_dotenv
 import os
 import sys
@@ -12,10 +17,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '../.env'))
 
+
 app = FastAPI(
     title="AuraPredict API",
     description="Predictive Maintenance AI — API para sensores IoT y Raspberry Pi",
-    version="1.3.0"
+    version="1.4.0"
 )
 
 # --- CARGA DEL MODELO ---
@@ -28,8 +34,28 @@ except Exception as e:
     modelo_ia = None
     print(f"❌ Error al cargar el modelo: {e}")
 
+# --- SEGURIDAD ---
+security = HTTPBearer()
+
+
+def get_usuario_actual(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verifica el token JWT en cada petición protegida."""
+    token = credentials.credentials
+    payload = verificar_token(token)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token inválido o expirado"
+        )
+    return payload
 
 # --- ESQUEMAS ---
+
+
+class DatosLogin(BaseModel):
+    email:    str
+    password: str
+
 
 class DatosVibracion(BaseModel):
     maquina:      str = "Torno_CNC_1"
@@ -45,16 +71,47 @@ class DatosPrensaExtrusion(BaseModel):
     Vibracion_Bomba_AltaFrec_dB: float
     Particulas_Aceite_ISO:       int
 
-
 # --- ENDPOINTS ---
+
 
 @app.get("/")
 def read_root():
-    return {"mensaje": "AuraPredict API está ONLINE", "version": "1.3.0"}
+    return {"mensaje": "AuraPredict API está ONLINE", "version": "1.4.0"}
+
+
+@app.post("/login")
+def login(datos: DatosLogin):
+    usuario = obtener_usuario_por_email(datos.email)
+    if not usuario:
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+
+    id_, email, password_hash, nombre, rol, empresa_id, activo = usuario
+
+    if not activo:
+        raise HTTPException(status_code=403, detail="Usuario desactivado")
+
+    if not verificar_password(datos.password, password_hash):
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+
+    token = crear_token({
+        "sub":        email,
+        "nombre":     nombre,
+        "rol":        rol,
+        "empresa_id": empresa_id
+    })
+
+    return {
+        "access_token": token,
+        "token_type":   "bearer",
+        "nombre":       nombre,
+        "rol":          rol,
+        "empresa_id":   empresa_id
+    }
 
 
 @app.post("/predict/bearing")
-def predecir_rodamiento(datos: DatosVibracion):
+def predecir_rodamiento(datos: DatosVibracion,
+                        current_user: dict = Depends(get_usuario_actual)):
     if modelo_ia is None:
         return {"error": "Modelo no disponible."}
 
@@ -87,7 +144,6 @@ def predecir_rodamiento(datos: DatosVibracion):
         diagnostico=diagnostico["tipo_fallo"]
     )
 
-    # Enviar alerta ANTES del return
     if prediccion != 1:
         emails_cliente = obtener_emails_maquina(datos.maquina)
         enviar_alerta(
@@ -113,7 +169,8 @@ def predecir_rodamiento(datos: DatosVibracion):
 
 
 @app.post("/predict/extrusion_press")
-def predecir_prensa(datos: DatosPrensaExtrusion):
+def predecir_prensa(datos: DatosPrensaExtrusion,
+                    current_user: dict = Depends(get_usuario_actual)):
     if datos.Desviacion_Columnas_uE > 15.0:
         estado = "NOK - Desalineación Estructural"
         riesgo = "CRÍTICO - Peligro de rotura de columna"
