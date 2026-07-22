@@ -23,10 +23,10 @@ HORA_INICIO = 6     # 06:00 — inicio de jornada
 HORA_FIN = 22    # 18:00 — fin de jornada
 
 # Intervalo normal entre lecturas (en horas)
-INTERVALO_NORMAL_H = 0.05
+INTERVALO_NORMAL_H = 2
 
 # Intervalo en caso de anomalía (en minutos)
-INTERVALO_ANOMALIA_MIN = 1
+INTERVALO_ANOMALIA_MIN = 5
 
 # Número de muestras por ventana de análisis
 MUESTRAS = 200

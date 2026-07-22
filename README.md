@@ -1,33 +1,51 @@
 # 🔮 AuraPredict: Sistema Avanzado de Mantenimiento Predictivo Industrial
 
-AuraPredict es una plataforma integral de **Mantenimiento Predictivo (PdM)** diseñada para entornos de Industria 4.0. Utiliza Inteligencia Artificial (Machine Learning No Supervisado) y telemetría avanzada para monitorizar la salud de activos industriales críticos en tiempo real.
+AuraPredict es una plataforma integral de **Mantenimiento Predictivo (PdM)** diseñada para entornos de Industria 4.0. Utiliza Inteligencia Artificial (Machine Learning No Supervisado) y telemetría avanzada para monitorizar la salud de activos industriales críticos en tiempo real, con soporte multi-empresa y autenticación segura.
 
 El objetivo principal es predecir fallos catastróficos y desgaste de componentes antes de que provoquen paradas de producción no planificadas, permitiendo la transición del mantenimiento preventivo al predictivo.
 
+🚀 Producción: aurapredict-dashboard.onrender.com
+⚙️ API: aurapredict-api.onrender.com
+
 ## 🏗️ Arquitectura de Microservicios
 
-El proyecto está diseñado bajo una arquitectura desacoplada, lista para despliegues en _Edge Computing_ o _Cloud_:
+El proyecto está diseñado bajo una arquitectura desacoplada en cuatro capas:
 
-1. **AI Core (Machine Learning):**
-   - Implementación de algoritmos de detección de anomalías (`Isolation Forest`) para modelar la curva P-F (Potential to Failure).
-   - Capaz de aprender la "firma de salud" base de una máquina e identificar desviaciones sutiles.
-2. **Backend Engine (FastAPI):**
-   - API REST de alto rendimiento que centraliza la lógica de diagnóstico.
-   - Valida estrictamente los payloads de telemetría provenientes de los PLCs o sensores IoT de la planta.
-3. **Frontend Dashboard (Streamlit):**
-   - Interfaz de usuario (HMI) diseñada para jefes de planta y directores de mantenimiento.
-   - Visualización clara de alertas, estados y recomendaciones operativas en tiempo real.
+**AI Core (Machine Learning):**
+
+- Algoritmo Isolation Forest para detección de anomalías sin datos de fallo previos.
+- Modela la "firma de salud" base de cada máquina e identifica desviaciones sutiles.
+- Motor de diagnóstico basado en reglas expertas (diagnostico.py) con 7 tipos de fallo clasificados.
+
+**Backend Engine (FastAPI):**
+
+- API REST con autenticación JWT (tokens de 8 horas, renovación automática).
+- Endpoints protegidos con HTTPBearer y Depends(get_usuario_actual).
+- Sistema de alertas por email (Gmail SMTP SSL) con intervalo mínimo configurable.
+
+**Frontend Dashboard (Streamlit):**
+
+- Interfaz multi-rol: admin con vista global + panel de administración; cliente con vista filtrada.
+- Splash screen en primera carga, login con sesión JWT, cierre de sesión seguro.
+- Exportación a Excel con filtro por fechas y hoja de resumen de disponibilidad.
+
+**Adquisición de Datos (Scheduler / Raspberry Pi):**
+
+- Scheduler autónomo con horario laboral configurable y modo anomalía automático.
+- Script de lectura directa del sensor ADXL345 vía I2C para Raspberry Pi.
+- Autenticación JWT en el scheduler para envío seguro de lecturas a la API.
 
 ## 🏭 Activos Monitorizados (Casos de Uso)
 
-AuraPredict soporta múltiples perfiles de maquinaria mediante endpoints dedicados:
+**⚙️ Tornos CNC y Fresadoras (Mecanizado):**
 
-- **⚙️ Tornos CNC y Fresadoras (Mecanizado):**
-  - Analiza telemetría de vibración de alta frecuencia (RMS, Peak-to-Peak, Kurtosis, Skewness).
-  - Detecta micro-grietas en rodamientos y desgaste de husillos días antes de la rotura.
-- **🏗️ Prensas Hidráulicas de Extrusión (Aluminio):**
-  - Evalúa el riesgo de rotura por fatiga estructural leyendo micro-deformaciones ($\mu\epsilon$) en las columnas (Tie Rods).
-  - Monitoriza la firma acústica (dB) y la contaminación del aceite (ISO) para predecir fallos en el bloque hidráulico principal.
+- Telemetría de vibración de alta frecuencia: RMS, Peak-to-Peak, Kurtosis, Skewness.
+- Detecta desgaste de rodamientos, desalineación de eje, holguras mecánicas y fallos de pista.
+
+**🏗️ Prensas Hidráulicas de Extrusión (Aluminio):**
+
+- Micro-deformaciones en columnas (µε), firma acústica de bomba (dB) y contaminación de aceite (ISO 4406).
+- Detecta desalineación estructural y desgaste hidráulico.
 
 ## 🚀 Tecnologías Empleadas
 
@@ -75,32 +93,24 @@ cd aura-predict
     python -m streamlit run src/dashboard.py
 ```
 
-- **Terminal 3 — Simulador (opcional, para generar datos de prueba)**
+- **Terminal 3 — Simulador de sensores para pruebas (opcional)**
 
 ```bash
     python src/simulador.py
 ```
 
-## 📡 Ejemplo de Interacción API
+- **Terminal 4 — Scheduler de adquisición automática (opcional)**
 
-Los sensores en planta envían peticiones POST automáticas al servidor.
-
-**Prensa de Extrusión: POST /predict/extrusion_press**
-
-```json
-{
-  "Desviacion_Columnas_uE": 2.5,
-  "Vibracion_Bomba_AltaFrec_dB": 65.0,
-  "Particulas_Aceite_ISO": 14
-}
+```bash
+    python src/scheduler.py
 ```
 
-**Respuesta de la IA**
+## 📊 Funcionalidades del Dashboard
 
-```json
-{
-  "Desviacion_Columnas_uE": 2.5,
-  "Vibracion_Bomba_AltaFrec_dB": 65.0,
-  "Particulas_Aceite_ISO": 14
-}
-```
+- **Vista global de estado:** tabla en tiempo real con estado OK/NOK de todos los activos (solo admin).
+- **Panel de administración:** gestión de empresas, usuarios y asignación de máquinas (solo admin).
+- **Historial gráfico:** evolución temporal de RMS/Kurtosis (rodamiento) y µε/dB/ISO (prensa).
+- **Exportación a Excel:** historial filtrado por fechas con hoja de resumen y % de disponibilidad.
+- **Alertas por email:** notificación automática con diagnóstico completo al detectar anomalía.
+- **Splash screen:** pantalla de carga visual en la primera inicialización del servicio.
+- **Multi-empresa:** cada cliente ve únicamente sus propias máquinas y datos.
