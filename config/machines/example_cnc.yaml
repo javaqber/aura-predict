@@ -1,0 +1,45 @@
+# =============================================================================
+# AuraPredict — Edge Configuration Template
+# Copy and rename per machine: torno_cnc_1.yaml, fresadora_cnc_2.yaml, etc.
+# =============================================================================
+
+machine:
+  id: Torno_CNC_1             # Logical name — must match maquinas.nombre in DB
+  empresa_id: 1                # Integer PK in empresas table
+  tipo: torno_cnc              # torno_cnc | centro_mecanizado | fresadora_cnc
+  rpm_nominal: 3000.0          # Nameplate RPM (never used as rpm_real)
+  # maquina_id: 5              # Optional: integer PK in maquinas table.
+                               # If set, allows offline startup without DB lookup.
+                               # If absent, resolved from DB at pipeline startup.
+
+sensor:
+  type: mock                   # mock | adxl345 | iepe
+  sampling_rate_hz: 3200.0     # Target/configured sampling rate (Hz)
+  odr_hz: 3200.0               # ODR configured in sensor register (informational)
+                               # IMPORTANT: 3200 Hz is a configuration target,
+                               # NOT a hardware guarantee. Verify sampling_rate_actual
+                               # in logs before relying on FFT above Nyquist/2.
+  samples_per_window: 3200     # Samples per acquisition window (1 second at 3200 Hz)
+  axes: [x, y, z]
+  # i2c_address: "0x53"        # For ADXL345 (uncomment when using real hardware)
+
+preprocessing:
+  bandpass_low_hz: 10.0        # Low cutoff (Hz) — removes rigid body motion
+  bandpass_high_hz: 1000.0     # High cutoff (Hz) — must be < Nyquist (fs/2)
+  filter_order: 4              # Butterworth filter order
+  detrend: linear              # linear | constant
+  window_type: hann            # hann | hamming | blackman | flattop | rectangular
+  bands:
+    - {name: low,  low_hz: 10.0,  high_hz: 100.0}   # Low frequency band
+    - {name: mid,  low_hz: 100.0, high_hz: 500.0}   # Mid frequency band
+    - {name: high, low_hz: 500.0, high_hz: 1600.0}  # High frequency band
+
+acquisition:
+  primary_axis: x              # Axis used for frequency-domain DB columns
+  include_total_axis: false    # Compute sqrt(x²+y²+z²) magnitude axis
+  interval_normal_s: 120.0     # Seconds between readings in normal operation
+  interval_anomaly_s: 30.0     # Seconds between readings when anomaly suspected
+
+buffer:
+  base_dir: /tmp/aurapredict/buffer   # Local offline buffer directory
+  max_entries: 500                    # Max buffered readings before oldest is dropped

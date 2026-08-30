@@ -671,7 +671,10 @@ def puede_enviar_alerta(maquina_id: int, cooldown_hours: float = 1.0) -> bool:
     Replaces the in-memory _ultimo_envio dict in alertas.py.
 
     Returns True if no alert was sent within the cooldown period.
+    cooldown_hours <= 0 always returns True (no cooldown).
     """
+    if cooldown_hours <= 0:
+        return True
     conn = get_conn()
     cur  = conn.cursor()
     try:
