@@ -17,11 +17,19 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from ..sensors.base_sensor import SensorReading
 from ..feature_extraction import MultiAxisReading
 from ..data_quality import DataQualityResult
+
+# AnomalyResult is imported here for FeatureSet.anomaly_result.
+# TYPE_CHECKING guard avoids any circular-import risk at runtime.
+if TYPE_CHECKING:
+    from ..anomaly.anomaly_detector import AnomalyResult as _AnomalyResult
+
+# Also import at runtime so isinstance() works and the type is usable as default.
+from ..anomaly.anomaly_detector import AnomalyResult  # noqa: E402
 
 
 # ─── RAW SIGNAL ───────────────────────────────────────────────────────────────
@@ -92,16 +100,22 @@ class FeatureSet:
     multiaxis:        MultiAxisReading
     quality_per_axis: dict[str, DataQualityResult]
     primary_axis:     str = "x"
+    # Set by the anomaly engine AFTER acquisition (Fase 2C).
+    # None in Fase 2B — to_lectura_cnc_payload() falls back to placeholder values.
+    anomaly_result:   Optional[AnomalyResult] = field(default=None)
 
     def to_lectura_cnc_payload(self) -> dict:
         """
         Build the kwargs dict for database_v2.repositories.registrar_lectura_cnc().
 
-        Phase 2B:
-          resultado    = 'OK - Sin validar'  (anomaly engine not yet active)
-          nivel_riesgo = 'Pendiente'          (Fase 2C will compute this)
-          anomaly_score / health_score = None (Fase 2C fills these)
-          model_version_id = None             (no ML model registered yet)
+        Fase 2B (anomaly_result is None):
+          resultado    = 'OK - Sin validar'
+          nivel_riesgo = 'Pendiente'
+          anomaly_score / health_score / model_version_id = None
+
+        Fase 2C (anomaly_result is set by the anomaly engine before this call):
+          resultado, nivel_riesgo, anomaly_score, health_score, diagnostico,
+          and model_version_id are taken from anomaly_result.
         """
         ma  = self.multiaxis
         ctx = ma.context
@@ -141,11 +155,28 @@ class FeatureSet:
         overall_quality = min(valid_scores) if valid_scores else None
         quality_status  = pq.status if pq else "UNKNOWN"
 
+        # ── Anomaly / Health values: Fase 2C or Fase 2B fallback ──────────────
+        ar = self.anomaly_result
+        if ar is not None:
+            resultado        = ar.resultado
+            nivel_riesgo     = ar.nivel_riesgo
+            anomaly_score    = ar.anomaly_score
+            health_score     = ar.health_score
+            diagnostico      = ar.diagnostico
+            model_version_id = ar.model_version_id
+        else:
+            resultado        = "OK - Sin validar"   # Fase 2B placeholder
+            nivel_riesgo     = "Pendiente"
+            anomaly_score    = None
+            health_score     = None
+            diagnostico      = ""
+            model_version_id = None
+
         return dict(
             maquina_id               = self.maquina_id,
             empresa_id               = self.empresa_id,
-            resultado                = "OK - Sin validar",  # Fase 2C updates
-            nivel_riesgo             = "Pendiente",          # Fase 2C updates
+            resultado                = resultado,
+            nivel_riesgo             = nivel_riesgo,
             sampling_rate_configured = ma.sampling_rate_configured,
             sampling_rate_actual     = sr_actual,
             sample_loss_fraction     = sr_loss,
@@ -181,18 +212,18 @@ class FeatureSet:
             band_low_energy          = band_low,
             band_mid_energy          = band_mid,
             band_high_energy         = band_high,
-            # Order analysis — None until rpm_real available (Fase 2C)
+            # Order analysis — None until rpm_real available
             order_1x_energy          = None,
             order_2x_energy          = None,
             order_3x_energy          = None,
             # Signal quality
             signal_quality_score     = overall_quality,
             data_quality_status      = quality_status,
-            # Anomaly / Health — None in Fase 2B; computed by Fase 2C
-            anomaly_score            = None,
-            health_score             = None,
-            diagnostico              = "",
-            model_version_id         = None,
+            # Anomaly / Health — from anomaly_result (Fase 2C) or None (Fase 2B)
+            anomaly_score            = anomaly_score,
+            health_score             = health_score,
+            diagnostico              = diagnostico,
+            model_version_id         = model_version_id,
         )
 
 

@@ -397,6 +397,80 @@ def obtener_historial_cnc(maquina_id: int, limite: int = 50) -> list[dict]:
         conn.close()
 
 
+def obtener_lecturas_para_baseline(
+    maquina_id:      int,
+    n:               int  = 200,
+    excluir_estados: Optional[list[str]] = None,
+) -> list[dict]:
+    """
+    Return up to N recent 'normal' readings with the full 8-feature vector
+    used to build the Isolation Forest baseline.
+
+    Only returns readings that are considered normal operation:
+      - resultado NOT in excluir_estados (defaults: NOK, ALERTA, SENSOR_ERROR)
+      - signal_quality_score >= 0.5  (unreliable signals excluded)
+      - All 8 IF features must be non-NULL
+
+    Columns returned (exactly the FEATURE_NAMES vector for the IF model):
+      rms_x, kurtosis_x, crest_factor_x, peak_to_peak_x,
+      dominant_freq_hz, band_low_energy, band_mid_energy, band_high_energy
+
+    Plus metadata: id, timestamp, signal_quality_score.
+
+    Args:
+        maquina_id:      Machine integer PK.
+        n:               Maximum number of readings to return.
+        excluir_estados: resultado values to exclude.
+                         Defaults to anomaly/error states.
+
+    Returns:
+        List of dicts, newest first, with the 8 IF features + metadata.
+        Returns an empty list if there are fewer than 1 valid reading.
+    """
+    if excluir_estados is None:
+        excluir_estados = [
+            "NOK - Anomalía Detectada",
+            "ALERTA",
+            "SENSOR_ERROR",
+        ]
+
+    conn = get_conn()
+    cur  = conn.cursor()
+    try:
+        # Use a tuple for the IN clause; psycopg2 adapts list→tuple correctly
+        cur.execute("""
+            SELECT id, timestamp, signal_quality_score,
+                   rms_x, kurtosis_x, crest_factor_x, peak_to_peak_x,
+                   dominant_freq_hz,
+                   band_low_energy, band_mid_energy, band_high_energy
+            FROM lecturas_cnc_v2
+            WHERE maquina_id = %s
+              AND resultado NOT IN %s
+              AND signal_quality_score >= 0.5
+              AND rms_x          IS NOT NULL
+              AND kurtosis_x     IS NOT NULL
+              AND crest_factor_x IS NOT NULL
+              AND peak_to_peak_x IS NOT NULL
+              AND dominant_freq_hz  IS NOT NULL
+              AND band_low_energy   IS NOT NULL
+              AND band_mid_energy   IS NOT NULL
+              AND band_high_energy  IS NOT NULL
+            ORDER BY timestamp DESC
+            LIMIT %s
+        """, (maquina_id, tuple(excluir_estados), n))
+
+        cols = [
+            "id", "timestamp", "signal_quality_score",
+            "rms_x", "kurtosis_x", "crest_factor_x", "peak_to_peak_x",
+            "dominant_freq_hz",
+            "band_low_energy", "band_mid_energy", "band_high_energy",
+        ]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+
 # ─── HEALTH SCORES ────────────────────────────────────────────────────────────
 
 def registrar_health_score(

@@ -18,7 +18,7 @@ Adds (new in Fase 2B):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 import yaml
 
@@ -77,6 +77,53 @@ class BufferConfig:
     max_entries: int = 500
 
 
+# ─── ANOMALY CONFIG ────────────────────────────────────────────────────────────
+
+@dataclass
+class AnomalyConfig:
+    """
+    Anomaly detection, health scoring and RAW capture configuration (Fase 2C).
+    All fields have defaults — the section is optional in the YAML.
+
+    Adds (new in Fase 2C):
+      Baseline management   — when to switch from ZScore to IsolationForest
+      IsolationForest params — n_estimators, contamination
+      Health score thresholds — must match _classify_health() in anomaly_detector.py
+      RAW capture           — when and where to save raw .npz files
+      Alert cooldown        — minimum hours between alerts per machine
+    """
+    # ── Baseline / cold start ──────────────────────────────────────────────────
+    baseline_min_samples:  int               = 50      # normal readings before IF
+    update_every_n:        int               = 20      # retrain every N new normals
+    baseline_window_n:     int               = 200     # readings kept in rolling buffer
+    z_score_threshold:     float             = 3.0     # σ for cold-start ZScore
+
+    # ── Isolation Forest ───────────────────────────────────────────────────────
+    if_n_estimators:       int               = 50
+    if_contamination:      Union[str, float] = "auto"  # 'auto' or 0.0–0.5
+    model_base_dir:        str               = "/tmp/aurapredict/models"
+
+    # ── Health score thresholds ────────────────────────────────────────────────
+    # Must be consistent with _classify_health() in anomaly_detector.py.
+    # score ≥ health_watch   → OK - Sano   / Bajo
+    # score ≥ health_warning → ADVERTENCIA / Medio
+    # score ≥ health_alert   → ALERTA      / Alto
+    # score <  health_alert  → NOK         / CRÍTICO
+    health_watch:          int               = 75
+    health_warning:        int               = 50
+    health_alert:          int               = 25
+    quality_min_threshold: float             = 0.5    # below → health_score=None
+
+    # ── RAW capture ────────────────────────────────────────────────────────────
+    capture_threshold:     int               = 50     # health < this → capture
+    capture_cooldown_s:    float             = 3600.0  # seconds between captures
+    raw_base_dir:          str               = "/tmp/aurapredict/raw"
+
+    # ── Alerts ─────────────────────────────────────────────────────────────────
+    alert_cooldown_hours:  float             = 1.0
+    alert_emails:          list[str]         = field(default_factory=list)
+
+
 # ─── EDGE CONFIG ───────────────────────────────────────────────────────────────
 
 @dataclass
@@ -88,10 +135,13 @@ class EdgeConfig:
     Loaded from a per-machine YAML file via EdgeConfig.from_yaml().
     """
     machine:     MachineConfig
-    sensor:      SensorConfig       # from sensors/base_sensor.py
-    signal:      SignalConfig       # from signal_processing.py
+    sensor:      SensorConfig        # from sensors/base_sensor.py
+    signal:      SignalConfig        # from signal_processing.py
     acquisition: AcquisitionConfig
     buffer:      BufferConfig
+    # AnomalyConfig is optional — defaults apply when the YAML has no anomaly: section.
+    # Existing code that constructs EdgeConfig without anomaly= still works.
+    anomaly:     AnomalyConfig = field(default_factory=AnomalyConfig)
 
     @classmethod
     def from_yaml(cls, path: str) -> "EdgeConfig":
@@ -165,10 +215,32 @@ class EdgeConfig:
             max_entries = int(buf.get("max_entries", 500)),
         )
 
+        # ── AnomalyConfig (optional section, all defaults apply if absent) ────
+        an = data.get("anomaly", {})
+        anomaly = AnomalyConfig(
+            baseline_min_samples  = int(an.get("baseline_min_samples", 50)),
+            update_every_n        = int(an.get("update_every_n", 20)),
+            baseline_window_n     = int(an.get("baseline_window_n", 200)),
+            z_score_threshold     = float(an.get("z_score_threshold", 3.0)),
+            if_n_estimators       = int(an.get("if_n_estimators", 50)),
+            if_contamination      = an.get("if_contamination", "auto"),
+            model_base_dir        = an.get("model_base_dir", "/tmp/aurapredict/models"),
+            health_watch          = int(an.get("health_watch", 75)),
+            health_warning        = int(an.get("health_warning", 50)),
+            health_alert          = int(an.get("health_alert", 25)),
+            quality_min_threshold = float(an.get("quality_min_threshold", 0.5)),
+            capture_threshold     = int(an.get("capture_threshold", 50)),
+            capture_cooldown_s    = float(an.get("capture_cooldown_s", 3600.0)),
+            raw_base_dir          = an.get("raw_base_dir", "/tmp/aurapredict/raw"),
+            alert_cooldown_hours  = float(an.get("alert_cooldown_hours", 1.0)),
+            alert_emails          = list(an.get("alert_emails", [])),
+        )
+
         return cls(
             machine     = machine,
             sensor      = sensor,
             signal      = signal,
             acquisition = acquisition,
             buffer      = buffer,
+            anomaly     = anomaly,
         )

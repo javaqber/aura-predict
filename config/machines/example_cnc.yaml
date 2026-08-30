@@ -43,3 +43,33 @@ acquisition:
 buffer:
   base_dir: /tmp/aurapredict/buffer   # Local offline buffer directory
   max_entries: 500                    # Max buffered readings before oldest is dropped
+
+anomaly:
+  # ── Baseline / cold start ──────────────────────────────────────────────────
+  # The system starts with a Z-score detector and transitions to Isolation Forest
+  # once enough 'normal' readings have been accumulated.
+  baseline_min_samples: 50           # Minimum normal readings before activating IF
+  update_every_n: 20                 # Retrain IF after every N new normal readings
+  baseline_window_n: 200             # Rolling buffer size (readings kept in memory)
+  z_score_threshold: 3.0             # Sigma threshold for cold-start Z-score detection
+
+  # ── Isolation Forest ────────────────────────────────────────────────────────
+  if_n_estimators: 50
+  if_contamination: "auto"           # 'auto' or a float in [0.0, 0.5]
+  model_base_dir: /tmp/aurapredict/models
+
+  # ── Health score thresholds ─────────────────────────────────────────────────
+  health_watch: 75                   # score ≥ 75 → OK - Sano / Bajo
+  health_warning: 50                 # score ≥ 50 → ADVERTENCIA / Medio
+  health_alert: 25                   # score ≥ 25 → ALERTA / Alto
+                                     # score <  25 → NOK - Anomalía / CRÍTICO
+  quality_min_threshold: 0.5         # Signal quality below this → health_score=None
+
+  # ── RAW capture ─────────────────────────────────────────────────────────────
+  capture_threshold: 50              # health_score below this triggers RAW save
+  capture_cooldown_s: 3600.0         # Minimum seconds between RAW captures (1 hour)
+  raw_base_dir: /tmp/aurapredict/raw # Directory for .npz raw event files
+
+  # ── Alerts ──────────────────────────────────────────────────────────────────
+  alert_cooldown_hours: 1.0          # Minimum hours between alerts per machine
+  alert_emails: []                   # Email recipients (empty = no email in MVP)
