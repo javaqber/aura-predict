@@ -73,3 +73,11 @@ anomaly:
   # ── Alerts ──────────────────────────────────────────────────────────────────
   alert_cooldown_hours: 1.0          # Minimum hours between alerts per machine
   alert_emails: []                   # Email recipients (empty = no email in MVP)
+
+sync:
+  # ── Supabase Storage synchronisation (Fase 2D) ────────────────────────────
+  # Set enabled: false to run in fully offline / local-only mode.
+  enabled: true
+  raw_bucket: aurapredict-raw-events    # bucket for .npz raw event files
+  model_bucket: aurapredict-models      # bucket for .joblib model files
+  max_raw_per_cycle: 5                  # max uploads per acquisition cycle

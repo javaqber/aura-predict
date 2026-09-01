@@ -124,6 +124,25 @@ class AnomalyConfig:
     alert_emails:          list[str]         = field(default_factory=list)
 
 
+
+# ─── SYNC CONFIG ───────────────────────────────────────────────────────────────
+
+@dataclass
+class SyncConfig:
+    """
+    Supabase Storage synchronisation configuration (Fase 2D).
+    All fields have defaults — the sync: section is optional in the YAML.
+
+    raw_bucket    : Storage bucket for .npz raw event files.
+    model_bucket  : Storage bucket for .joblib model files.
+    max_raw_per_cycle : Maximum raw events uploaded per acquisition cycle.
+    enabled       : Master switch. False = all sync disabled (offline-only mode).
+    """
+    raw_bucket:         str   = "aurapredict-raw-events"
+    model_bucket:       str   = "aurapredict-models"
+    max_raw_per_cycle:  int   = 5
+    enabled:            bool  = True
+
 # ─── EDGE CONFIG ───────────────────────────────────────────────────────────────
 
 @dataclass
@@ -142,6 +161,8 @@ class EdgeConfig:
     # AnomalyConfig is optional — defaults apply when the YAML has no anomaly: section.
     # Existing code that constructs EdgeConfig without anomaly= still works.
     anomaly:     AnomalyConfig = field(default_factory=AnomalyConfig)
+    # SyncConfig is optional — defaults apply when the YAML has no sync: section.
+    sync:        SyncConfig    = field(default_factory=SyncConfig)
 
     @classmethod
     def from_yaml(cls, path: str) -> "EdgeConfig":
@@ -236,6 +257,15 @@ class EdgeConfig:
             alert_emails          = list(an.get("alert_emails", [])),
         )
 
+        # ── SyncConfig (optional section, all defaults apply if absent) ──────
+        sy = data.get("sync", {})
+        sync = SyncConfig(
+            raw_bucket        = sy.get("raw_bucket",        "aurapredict-raw-events"),
+            model_bucket      = sy.get("model_bucket",      "aurapredict-models"),
+            max_raw_per_cycle = int(sy.get("max_raw_per_cycle", 5)),
+            enabled           = bool(sy.get("enabled",      True)),
+        )
+
         return cls(
             machine     = machine,
             sensor      = sensor,
@@ -243,4 +273,5 @@ class EdgeConfig:
             acquisition = acquisition,
             buffer      = buffer,
             anomaly     = anomaly,
+            sync        = sync,
         )

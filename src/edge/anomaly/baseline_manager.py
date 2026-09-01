@@ -299,6 +299,9 @@ class MachineBaselineManager:
             z_threshold      = self._z_threshold,
         )
 
+        # Fase 2D: upload model to Supabase Storage (best-effort, offline-safe)
+        self._try_upload_model(model_path, version, model_version_id)
+
     # ── Internal: database interactions ───────────────────────────────────────
 
     def _try_load_from_db(self) -> bool:
@@ -324,6 +327,36 @@ class MachineBaselineManager:
             model_version_id = model_version_id,
             z_threshold      = self._z_threshold,
         )
+
+    def _try_upload_model(
+        self,
+        model_path:       Path,
+        version:          str,
+        model_version_id: Optional[int],
+    ) -> None:
+        """
+        Upload the trained .joblib to Supabase Storage (Fase 2D).
+        Completely non-blocking: any failure is logged and ignored.
+        The model remains fully operational locally.
+        """
+        if model_version_id is None:
+            return  # No BD record → cannot link the upload
+        try:
+            from ..sync.connectivity import get_storage_client_from_env
+            from ..sync.model_sync import ModelSync
+            client = get_storage_client_from_env()
+            if client is None:
+                return  # SUPABASE_URL/KEY not configured
+            sync = ModelSync(client)
+            sync.upload_model(
+                maquina_id = self._maquina_id,
+                empresa_id = self._empresa_id,
+                model_id   = model_version_id,
+                version    = version,
+                local_path = model_path,
+            )
+        except Exception as exc:
+            print(f"[BaselineManager] Model upload skipped: {exc}")
 
     def _register_model_in_db(
         self,

@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from ..anomaly.baseline_manager import MachineBaselineManager
     from ..anomaly.raw_capture import RawEventCapture
     from ..anomaly.anomaly_detector import AnomalyResult
+    from ..sync.raw_storage_sync import RawStorageSync
 
 # Type aliases
 PersistFn          = Callable[..., Optional[int]]
@@ -78,6 +79,8 @@ class EdgePipeline:
         # ── Fase 2C injectable components ─────────────────────────────────────
         baseline_manager:      Optional["MachineBaselineManager"] = None,
         raw_capture:           Optional["RawEventCapture"]        = None,
+        # ── Fase 2D injectable components ─────────────────────────────────────
+        raw_storage_sync:      Optional["RawStorageSync"]         = None,
     ) -> None:
         self._config   = config
         self._sensor   = sensor
@@ -92,6 +95,8 @@ class EdgePipeline:
         # Fase 2C — None until startup() initialises them (or injected by tests)
         self._baseline_manager: Optional["MachineBaselineManager"] = baseline_manager
         self._raw_capture:      Optional["RawEventCapture"]        = raw_capture
+        # Fase 2D
+        self._raw_storage_sync: Optional["RawStorageSync"]         = raw_storage_sync
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -115,6 +120,14 @@ class EdgePipeline:
         if self._raw_capture is None:
             from ..anomaly.raw_capture import RawEventCapture
             self._raw_capture = RawEventCapture(self._config.anomaly.raw_base_dir)
+
+        # Fase 2D: auto-create RawStorageSync if sync is enabled and not injected
+        if self._raw_storage_sync is None and self._config.sync.enabled:
+            from ..sync.connectivity import get_storage_client_from_env
+            from ..sync.raw_storage_sync import RawStorageSync
+            client = get_storage_client_from_env()
+            if client is not None:
+                self._raw_storage_sync = RawStorageSync(client)
 
         self._sensor.configure()
 
@@ -173,6 +186,12 @@ class EdgePipeline:
         # 7. Flush buffered offline readings if we are back online
         if is_online and not self._buffer.is_empty():
             self._flush_buffer()
+
+        # 7b. Upload pending RAW events to Storage (Fase 2D)
+        if is_online and self._raw_storage_sync is not None:
+            maquina_id = self._config.machine.maquina_id
+            max_n = self._config.sync.max_raw_per_cycle
+            self._raw_storage_sync.upload_pending(maquina_id, max_per_cycle=max_n)
 
         # 8. Alert if nivel_riesgo is high (Fase 2C)
         if ar is not None:

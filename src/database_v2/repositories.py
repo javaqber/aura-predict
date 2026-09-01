@@ -589,26 +589,78 @@ def marcar_evento_subido(event_id: int, file_path: str, file_checksum: Optional[
 
 
 def obtener_eventos_pendientes_upload(maquina_id: Optional[int] = None) -> list[dict]:
-    """Return raw event windows not yet uploaded (offline sync queue)."""
+    """
+    Return raw event windows not yet uploaded to Storage (offline sync queue).
+
+    Returned columns (Fase 2D additions: empresa_id, file_checksum):
+      id, maquina_id, empresa_id, event_timestamp, total_samples,
+      file_path, file_checksum
+
+    empresa_id is needed to build the deterministic Storage path.
+    file_checksum allows RawStorageSync to verify integrity after upload.
+    Results ordered oldest-first (FIFO, matching LocalBuffer behaviour).
+    """
     conn = get_conn()
     cur  = conn.cursor()
     try:
         if maquina_id:
             cur.execute("""
-                SELECT id, maquina_id, event_timestamp, total_samples, file_path
+                SELECT id, maquina_id, empresa_id,
+                       event_timestamp, total_samples,
+                       file_path, file_checksum
                 FROM raw_event_windows
                 WHERE is_uploaded = FALSE AND maquina_id = %s
                 ORDER BY created_at ASC
             """, (maquina_id,))
         else:
             cur.execute("""
-                SELECT id, maquina_id, event_timestamp, total_samples, file_path
+                SELECT id, maquina_id, empresa_id,
+                       event_timestamp, total_samples,
+                       file_path, file_checksum
                 FROM raw_event_windows
                 WHERE is_uploaded = FALSE
                 ORDER BY created_at ASC
             """)
-        cols = ["id", "maquina_id", "event_timestamp", "total_samples", "file_path"]
+        cols = ["id", "maquina_id", "empresa_id",
+                "event_timestamp", "total_samples",
+                "file_path", "file_checksum"]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+
+def actualizar_storage_modelo(
+    model_id:     int,
+    storage_type: str,
+    storage_path: str,
+    checksum:     Optional[str],
+) -> bool:
+    """
+    Update the storage location and checksum of a model after uploading
+    it to Supabase Storage (or reverting to local on failure).
+
+    Called by ModelSync.upload_model() after a successful upload:
+      actualizar_storage_modelo(model_id, 'supabase', key, sha256_hex)
+
+    Returns True on success, False on any error.
+    """
+    conn = get_conn()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE machine_model_registry
+            SET storage_type   = %s,
+                model_path     = %s,
+                model_checksum = %s
+            WHERE id = %s
+        """, (storage_type, storage_path, checksum, model_id))
+        conn.commit()
+        return cur.rowcount == 1
+    except Exception as exc:
+        conn.rollback()
+        print(f"[repositories] actualizar_storage_modelo failed: {exc}")
+        return False
     finally:
         cur.close()
         conn.close()
