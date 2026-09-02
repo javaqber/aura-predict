@@ -666,6 +666,53 @@ def actualizar_storage_modelo(
         conn.close()
 
 
+def obtener_todas_maquinas_con_health(empresa_id: Optional[int] = None) -> list[dict]:
+    """
+    Return all machines with their latest health score and trend.
+    Used by the dashboard multi-machine status map (Fase 4B).
+
+    Returns one row per machine:
+        maquina_id, nombre, tipo, empresa_id, health_score, trend, slope, timestamp
+    """
+    conn = get_conn()
+    cur  = conn.cursor()
+    try:
+        if empresa_id:
+            cur.execute("""
+                SELECT m.id, m.nombre, m.tipo, m.empresa_id,
+                       hs.score, hs.trend, hs.slope, hs.timestamp
+                FROM maquinas m
+                LEFT JOIN LATERAL (
+                    SELECT score, trend, slope, timestamp
+                    FROM health_scores
+                    WHERE maquina_id = m.id
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ) hs ON true
+                WHERE m.empresa_id = %s
+                ORDER BY m.nombre
+            """, (empresa_id,))
+        else:
+            cur.execute("""
+                SELECT m.id, m.nombre, m.tipo, m.empresa_id,
+                       hs.score, hs.trend, hs.slope, hs.timestamp
+                FROM maquinas m
+                LEFT JOIN LATERAL (
+                    SELECT score, trend, slope, timestamp
+                    FROM health_scores
+                    WHERE maquina_id = m.id
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ) hs ON true
+                ORDER BY m.nombre
+            """)
+        cols = ["maquina_id", "nombre", "tipo", "empresa_id",
+                "health_score", "trend", "slope", "timestamp"]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
 # ─── MAINTENANCE EVENTS ───────────────────────────────────────────────────────
 
 def registrar_mantenimiento(

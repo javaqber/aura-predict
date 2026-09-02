@@ -81,6 +81,8 @@ class EdgePipeline:
         raw_capture:           Optional["RawEventCapture"]        = None,
         # ── Fase 2D injectable components ─────────────────────────────────────
         raw_storage_sync:      Optional["RawStorageSync"]         = None,
+        # ── Fase 3 injectable components ──────────────────────────────────────
+        alert_fn               = None,   # Callable[[AnomalyResult, FeatureSet], None]
     ) -> None:
         self._config   = config
         self._sensor   = sensor
@@ -97,6 +99,9 @@ class EdgePipeline:
         self._raw_capture:      Optional["RawEventCapture"]        = raw_capture
         # Fase 2D
         self._raw_storage_sync: Optional["RawStorageSync"]         = raw_storage_sync
+        # Fase 3
+        self._alert_fn                                            = alert_fn
+        self._feature_set_for_alert: Optional[FeatureSet]        = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -193,8 +198,9 @@ class EdgePipeline:
             max_n = self._config.sync.max_raw_per_cycle
             self._raw_storage_sync.upload_pending(maquina_id, max_per_cycle=max_n)
 
-        # 8. Alert if nivel_riesgo is high (Fase 2C)
+        # 8. Alert if nivel_riesgo is high (Fase 3: via alertas_v2)
         if ar is not None:
+            self._feature_set_for_alert = feature_set  # available in _maybe_send_alert
             self._maybe_send_alert(ar)
 
         # 9. RAW capture if trigger fires (Fase 2C — IsolationForestTrigger
@@ -245,6 +251,28 @@ class EdgePipeline:
             baseline_stats = self._baseline_manager.baseline_stats,
             signal_quality = signal_quality,
         )
+        # Fase 4A: enrich AnomalyResult with structured fault diagnosis
+        if ar.anomaly_score >= 0.25 and not ar.is_cold_start:
+            try:
+                from ..anomaly.fault_classifier import FaultClassifier, extract_per_axis_features
+                per_axis = extract_per_axis_features(feature_set)
+                fc = FaultClassifier()
+                diagnosis = fc.classify(vector, ar.anomaly_score, per_axis)
+                if diagnosis is not None:
+                    ar = type(ar)(
+                        anomaly_score    = ar.anomaly_score,
+                        health_score     = ar.health_score,
+                        resultado        = ar.resultado,
+                        nivel_riesgo     = ar.nivel_riesgo,
+                        diagnostico      = ar.diagnostico,
+                        model_version_id = ar.model_version_id,
+                        is_cold_start    = ar.is_cold_start,
+                        algorithm        = ar.algorithm,
+                        fault_diagnosis  = diagnosis,
+                    )
+            except Exception as exc:
+                print(f"[EdgePipeline] FaultClassifier skipped: {exc}")
+
         feature_set.anomaly_result = ar
 
         # Feed back to baseline — only accumulate genuinely normal readings
@@ -291,49 +319,45 @@ class EdgePipeline:
 
     def _maybe_send_alert(self, ar: "AnomalyResult") -> None:
         """
-        Register an alert entry in alert_log when nivel_riesgo is high.
+        Evaluate and optionally send an alert via alertas_v2.
 
-        Checks cooldown via puede_enviar_alerta() before inserting.
-        In MVP: alert is logged with enviado=False (no SMTP in Fase 2C).
-        Silent on failure (DB offline, etc.).
+        Fase 3: delegates to alertas_v2.maybe_enviar_alerta_cnc() which:
+          - Uses alert_log in BD for persistent cooldown (survives restarts).
+          - Sends email via alertas.py SMTP if EMAIL_ACTIVO=true.
+          - Falls back to in-memory cooldown if BD is offline.
+
+        Injectable _alert_fn allows tests to verify calls without BD or SMTP.
         """
-        if ar.is_cold_start:
+        if ar is None or ar.is_cold_start:
             return
         if ar.nivel_riesgo not in ("Alto", "CRÍTICO"):
             return
 
-        maquina_id = self._config.machine.maquina_id
-        empresa_id = self._config.machine.empresa_id
-        cooldown   = self._config.anomaly.alert_cooldown_hours
-        emails     = self._config.anomaly.alert_emails
-        tipo       = "CRITICAL" if ar.nivel_riesgo == "CRÍTICO" else "WARNING"
+        # Use injectable for tests; real implementation uses alertas_v2
+        if self._alert_fn is not None:
+            try:
+                self._alert_fn(ar, self._feature_set_for_alert)
+            except Exception as exc:
+                print(f"[EdgePipeline] Alert fn error: {exc}")
+            return
 
         try:
             _src = os.path.normpath(
                 os.path.join(os.path.dirname(__file__), "../../.."))
             if _src not in sys.path:
                 sys.path.insert(0, _src)
-            from database_v2.repositories import puede_enviar_alerta, registrar_alerta
-
-            if not puede_enviar_alerta(maquina_id, cooldown_hours=cooldown):
-                return  # still in cooldown
-
-            destinatario = emails[0] if emails else ""
-            asunto = (
-                f"AuraPredict {tipo}: {self._config.machine.machine_id} "
-                f"— health={ar.health_score}"
-            )
-            registrar_alerta(
-                maquina_id   = maquina_id,
-                empresa_id   = empresa_id,
-                tipo_alerta  = tipo,
-                destinatario = destinatario,
-                asunto       = asunto,
-                enviado      = False,   # MVP: log only, no SMTP
-                error_msg    = "Email sending not configured in Fase 2C",
+            from alertas_v2 import maybe_enviar_alerta_cnc
+            maybe_enviar_alerta_cnc(
+                maquina_id     = self._config.machine.maquina_id,
+                empresa_id     = self._config.machine.empresa_id,
+                machine_name   = self._config.machine.machine_id,
+                anomaly_result = ar,
+                feature_set    = self._feature_set_for_alert,
+                cooldown_hours = self._config.anomaly.alert_cooldown_hours,
+                destinatarios  = list(self._config.anomaly.alert_emails),
             )
         except Exception as exc:
-            print(f"[EdgePipeline] Alert registration skipped: {exc}")
+            print(f"[EdgePipeline] Alert skipped: {exc}")
 
     # ── Fase 2C: RAW capture ──────────────────────────────────────────────────
 

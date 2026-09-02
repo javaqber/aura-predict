@@ -81,3 +81,11 @@ sync:
   raw_bucket: aurapredict-raw-events    # bucket for .npz raw event files
   model_bucket: aurapredict-models      # bucket for .joblib model files
   max_raw_per_cycle: 5                  # max uploads per acquisition cycle
+
+scheduler:
+  # ── Edge Scheduler (Fase 3) ────────────────────────────────────────────────
+  enabled: true
+  run_24_7: true                    # No time-of-day restrictions
+  interval_normal_minutes: 120      # health >= 75 → every 2 hours
+  interval_watch_minutes: 30        # health 50-74 → every 30 minutes
+  interval_alert_minutes: 5         # health < 50  → every 5 minutes

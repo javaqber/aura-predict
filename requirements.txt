@@ -16,3 +16,4 @@ passlib[bcrypt]==1.7.4
 openpyxl
 schedule
 pyyaml
+httpx

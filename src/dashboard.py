@@ -266,8 +266,8 @@ with st.sidebar:
         st.markdown("---")
         st.markdown("### ⚙️ Administración")
 
-        tab_empresas, tab_usuarios, tab_maquinas = st.tabs(
-            ["Empresas", "Usuarios", "Máquinas"])
+        tab_empresas, tab_usuarios, tab_maquinas, tab_v2 = st.tabs(
+            ["Empresas", "Usuarios", "Máquinas", "📊 Monitorización v2"])
 
         with tab_empresas:
             st.markdown("**Empresas registradas:**")
@@ -856,3 +856,237 @@ else:
                             f"{fecha_inicio} y {fecha_fin}. "
                             f"Disponibilidad: {round(total_ok / total * 100, 1) if total > 0 else 0}%"
                         )
+
+
+    with tab_v2:
+        render_monitorizacion_v2()
+
+
+def _mantenimiento_recommendation(score, slope, trend) -> str:
+    """
+    Generate a maintenance recommendation text based on health score and trend.
+    Never presents uncertain data as certainty.
+    """
+    if score is None:
+        return "Sin datos suficientes para generar una recomendación."
+    if score >= 75:
+        if trend == "improving":
+            return "✅ Estado saludable con tendencia de mejora. Continuar con el plan de mantenimiento habitual."
+        if trend == "degrading" and slope is not None and slope < -2:
+            return "🟡 Estado saludable pero con tendencia decreciente. Vigilar evolución en los próximos días."
+        return "✅ Estado saludable. Sin acción inmediata requerida."
+    if score >= 50:
+        if slope is not None and abs(slope) > 1:
+            days = abs((score - 25) / slope) if slope != 0 else None
+            if days is not None and days < 14:
+                return f"🟠 Tendencia de degradación activa. Revisión recomendada en los próximos 7-14 días."
+        return "🟡 Estado en zona de vigilancia. Planificar inspección en la próxima parada programada."
+    if score >= 25:
+        return "🔴 Prioridad alta. Programar inspección técnica inmediata antes de la siguiente producción."
+    return "🔴 Estado crítico. Se recomienda detener la máquina e inspeccionar antes de continuar la operación."
+
+# ─── SECCIÓN v2: MONITORIZACIÓN EDGE ─────────────────────────────────────────
+# Esta sección es ADITIVA. No modifica ninguna funcionalidad legacy.
+# Requiere que los endpoints /v2/... estén disponibles en la API (Fase 3).
+
+def _api_headers() -> dict:
+    token = st.session_state.get("token", "")
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _get_v2(endpoint: str):
+    try:
+        r = requests.get(
+            f"{API_BASE_URL}{endpoint}",
+            headers=_api_headers(),
+            timeout=8,
+        )
+        return r.json() if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+def _health_color(score) -> str:
+    if score is None: return "#888888"
+    if score >= 75:   return "#2E7D32"
+    if score >= 50:   return "#F9A825"
+    if score >= 25:   return "#E65100"
+    return "#C62828"
+
+
+def _health_label(score) -> str:
+    if score is None: return "Sin datos"
+    if score >= 75:   return "🟢 Sano"
+    if score >= 50:   return "🟡 Vigilar"
+    if score >= 25:   return "🟠 Alerta"
+    return "🔴 Crítico"
+
+
+def render_monitorizacion_v2():
+    """Dashboard section for the Edge monitoring system — Fase 3/4."""
+    st.header("📊 Monitorización v2 — Sistema Edge")
+
+    if st.session_state.get("empresa_id") is None:
+        st.warning("Inicia sesión para ver los datos.")
+        return
+
+    # ── Tab layout ────────────────────────────────────────────────────────────
+    tab_maq, tab_resumen = st.tabs(["📈 Máquina individual", "🏭 Resumen de planta"])
+
+    with tab_resumen:
+        _render_resumen_planta()
+
+    with tab_maq:
+        _render_maquina_individual()
+
+
+def _render_resumen_planta():
+    """Multi-machine health status map."""
+    st.subheader("Estado de la planta")
+    if st.button("🔄 Actualizar resumen", key="btn_resumen"):
+        st.session_state.pop("v2_resumen", None)
+
+    if "v2_resumen" not in st.session_state:
+        with st.spinner("Cargando estado de máquinas..."):
+            st.session_state["v2_resumen"] = _get_v2("/v2/maquinas/resumen")
+
+    resumen = st.session_state.get("v2_resumen")
+    if not resumen or not resumen.get("maquinas"):
+        st.info("Sin máquinas registradas para esta empresa.")
+        return
+
+    import pandas as pd
+    maquinas = resumen["maquinas"]
+    rows = []
+    for m in maquinas:
+        score = m.get("health_score")
+        rows.append({
+            "Máquina":    m.get("nombre", "—"),
+            "Tipo":       m.get("tipo", "—"),
+            "Health":     f"{score}/100" if score is not None else "Sin datos",
+            "Estado":     _health_label(score),
+            "Tendencia":  m.get("trend", "—") or "—",
+            "Slope":      f"{m.get('slope', 0):.2f} pt/día" if m.get("slope") is not None else "—",
+            "Última lectura": str(m.get("timestamp", "—"))[:19],
+        })
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def _render_maquina_individual():
+    """Single-machine detailed view with charts and diagnosis."""
+    col_id, col_btn = st.columns([3, 1])
+    with col_id:
+        maquina_id = st.number_input(
+            "ID de máquina (maquina_id BD)", min_value=1, value=1, step=1,
+        )
+    with col_btn:
+        st.write("")
+        refresh = st.button("🔄 Actualizar", use_container_width=True, key="btn_maq")
+
+    if not refresh and "v2_data" not in st.session_state:
+        st.info("Pulsa **Actualizar** para cargar los datos.")
+        return
+
+    if refresh:
+        with st.spinner("Cargando datos..."):
+            st.session_state["v2_data"] = {
+                "health":     _get_v2(f"/v2/maquinas/{maquina_id}/health"),
+                "historial":  _get_v2(f"/v2/maquinas/{maquina_id}/historial?limite=60"),
+                "anomalias":  _get_v2(f"/v2/maquinas/{maquina_id}/anomalias?dias=30"),
+                "maquina_id": maquina_id,
+            }
+
+    data = st.session_state.get("v2_data", {})
+    if data.get("maquina_id") != maquina_id:
+        st.info("Pulsa **Actualizar** para cargar los datos de esta máquina.")
+        return
+
+    # ── Health Score card ──────────────────────────────────────────────────────
+    st.subheader("Estado actual")
+    hd = data.get("health")
+    if hd is None:
+        st.warning("Sin datos de health score. ¿La máquina pertenece a tu empresa?")
+    else:
+        score  = hd.get("health_score")
+        trend  = hd.get("trend", "—")
+        slope  = hd.get("slope")
+        color  = _health_color(score)
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Health Score", f"{score}/100" if score is not None else "—")
+        c2.metric("Estado",    _health_label(score))
+        c3.metric("Tendencia", trend or "—")
+        c4.metric("Slope",     f"{slope:.2f} pt/día" if slope is not None else "—")
+
+        if score is not None:
+            st.markdown(
+                f'<div style="background:#eee;border-radius:6px;height:16px;margin:6px 0;">'
+                f'<div style="background:{color};width:{score}%;height:100%;border-radius:6px;"></div>'
+                f'</div>', unsafe_allow_html=True,
+            )
+        st.caption(f"Última actualización: {hd.get('timestamp', '—')}")
+
+        # ── Maintenance recommendation ─────────────────────────────────────────
+        st.subheader("Recomendación de mantenimiento")
+        st.info(_mantenimiento_recommendation(score, slope, trend))
+
+    # ── Evolution charts ───────────────────────────────────────────────────────
+    hist = data.get("historial")
+    if hist and hist.get("lecturas"):
+        import pandas as pd
+        df = pd.DataFrame(hist["lecturas"])
+
+        st.subheader("Evolución del Health Score")
+        if "timestamp" in df.columns and "health_score" in df.columns:
+            df_hs = df[["timestamp", "health_score"]].dropna()
+            if not df_hs.empty:
+                df_hs = df_hs.sort_values("timestamp")
+                st.line_chart(df_hs.set_index("timestamp")["health_score"])
+            else:
+                st.info("Sin datos suficientes para mostrar evolución.")
+
+        st.subheader("Evolución de vibración (RMS y Kurtosis — eje X)")
+        vib_cols = [c for c in ["timestamp", "rms_x", "kurtosis_x"] if c in df.columns]
+        if len(vib_cols) == 3:
+            df_vib = df[vib_cols].dropna().sort_values("timestamp")
+            if not df_vib.empty:
+                c_rms, c_kurt = st.columns(2)
+                with c_rms:
+                    st.caption("RMS X (g)")
+                    st.line_chart(df_vib.set_index("timestamp")["rms_x"])
+                with c_kurt:
+                    st.caption("Kurtosis X")
+                    st.line_chart(df_vib.set_index("timestamp")["kurtosis_x"])
+        else:
+            st.info("Sin datos de vibración disponibles.")
+
+    else:
+        st.info("Sin historial de lecturas para esta máquina.")
+
+    # ── Fault diagnosis panel ──────────────────────────────────────────────────
+    anom = data.get("anomalias")
+    if anom and anom.get("anomalias"):
+        import pandas as pd
+        latest_anom = anom["anomalias"][0]
+        fd = latest_anom.get("fault_diagnosis")
+
+        if fd and isinstance(fd, dict) and fd.get("fault_type") not in (None, "UNCERTAIN"):
+            st.subheader("🔍 Diagnóstico de fallo más reciente")
+            dc1, dc2, dc3 = st.columns(3)
+            dc1.metric("Tipo de fallo",   fd.get("fault_type", "—"))
+            dc2.metric("Eje afectado",    fd.get("affected_axis", "—").upper())
+            dc3.metric("Severidad",       fd.get("severity", "—"))
+            conf = fd.get("confidence", 0)
+            st.progress(float(conf), text=f"Confianza: {conf:.0%}")
+            st.markdown(f"**Explicación:** {fd.get('explanation', '—')}")
+            st.markdown(f"**Recomendación:** {fd.get('recommendation', '—')}")
+
+        st.subheader("Anomalías recientes (30 días)")
+        df_a = pd.DataFrame(anom["anomalias"])
+        cols_a = [c for c in ["timestamp", "resultado", "nivel_riesgo",
+                               "health_score", "anomaly_score"] if c in df_a.columns]
+        st.dataframe(df_a[cols_a], use_container_width=True, hide_index=True)
+        st.caption(f"Total: {anom.get('total', 0)} anomalías.")
+    else:
+        st.success("✅ Sin anomalías en los últimos 30 días.")

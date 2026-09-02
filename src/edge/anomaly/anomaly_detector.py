@@ -25,7 +25,7 @@ Design rules:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -89,6 +89,8 @@ class AnomalyResult:
     model_version_id: Optional[int]
     is_cold_start:    bool
     algorithm:        str
+    # Fase 4A: structured fault diagnosis (None when no anomaly or uncertain)
+    fault_diagnosis:  Optional[object] = field(default=None)
 
 
 # ─── CLASSIFICATION HELPERS ───────────────────────────────────────────────────

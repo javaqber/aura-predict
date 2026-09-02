@@ -143,6 +143,28 @@ class SyncConfig:
     max_raw_per_cycle:  int   = 5
     enabled:            bool  = True
 
+
+# ─── SCHEDULER CONFIG ─────────────────────────────────────────────────────────
+
+@dataclass
+class SchedulerConfig:
+    """
+    Edge Scheduler timing configuration (Fase 3).
+    All values have safe defaults so existing EdgeConfig usage is unaffected.
+
+    Interval selection based on health_score (Decisión A, Fase 3):
+      score >= health_watch  (75) → interval_normal_minutes
+      score >= health_warning(50) → interval_watch_minutes
+      score <  health_warning(50) → interval_alert_minutes
+
+    run_24_7: True means the scheduler never pauses for out-of-hours periods.
+    """
+    enabled:                  bool  = True
+    run_24_7:                 bool  = True
+    interval_normal_minutes:  int   = 120   # 2 hours
+    interval_watch_minutes:   int   = 30    # 30 minutes
+    interval_alert_minutes:   int   = 5     # 5 minutes
+
 # ─── EDGE CONFIG ───────────────────────────────────────────────────────────────
 
 @dataclass
@@ -162,7 +184,8 @@ class EdgeConfig:
     # Existing code that constructs EdgeConfig without anomaly= still works.
     anomaly:     AnomalyConfig = field(default_factory=AnomalyConfig)
     # SyncConfig is optional — defaults apply when the YAML has no sync: section.
-    sync:        SyncConfig    = field(default_factory=SyncConfig)
+    sync:        SyncConfig       = field(default_factory=SyncConfig)
+    scheduler:   SchedulerConfig   = field(default_factory=SchedulerConfig)
 
     @classmethod
     def from_yaml(cls, path: str) -> "EdgeConfig":
@@ -266,6 +289,16 @@ class EdgeConfig:
             enabled           = bool(sy.get("enabled",      True)),
         )
 
+        # ── SchedulerConfig (optional section) ──────────────────────────────
+        sc = data.get("scheduler", {})
+        scheduler = SchedulerConfig(
+            enabled                 = bool(sc.get("enabled",                 True)),
+            run_24_7                = bool(sc.get("run_24_7",                True)),
+            interval_normal_minutes = int(sc.get("interval_normal_minutes",  120)),
+            interval_watch_minutes  = int(sc.get("interval_watch_minutes",   30)),
+            interval_alert_minutes  = int(sc.get("interval_alert_minutes",   5)),
+        )
+
         return cls(
             machine     = machine,
             sensor      = sensor,
@@ -274,4 +307,5 @@ class EdgeConfig:
             buffer      = buffer,
             anomaly     = anomaly,
             sync        = sync,
+            scheduler   = scheduler,
         )
