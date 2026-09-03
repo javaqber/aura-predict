@@ -26,9 +26,12 @@ health_score=None, which do not change any assertion they make.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from typing import Callable, Optional, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 from ..sensors.base_sensor import SensorInterface, SensorReading
 from ..config.edge_config import EdgeConfig
@@ -164,13 +167,13 @@ class EdgePipeline:
         try:
             reading = self._sensor.read()
         except Exception as exc:
-            print(f"[EdgePipeline] Sensor read error: {exc}")
+            logger.error("Sensor read error: %s", exc)
             return None
 
         # 2. Process through AcquisitionSession → FeatureSet
         feature_set = self._session.acquire(reading)
         if feature_set is None:
-            print("[EdgePipeline] All axes returned SENSOR_ERROR — skipping cycle")
+            logger.warning("All axes returned SENSOR_ERROR — skipping cycle")
             return None
 
         # 3. Anomaly detection (Fase 2C — no-op if baseline_manager is None)
@@ -271,7 +274,7 @@ class EdgePipeline:
                         fault_diagnosis  = diagnosis,
                     )
             except Exception as exc:
-                print(f"[EdgePipeline] FaultClassifier skipped: {exc}")
+                logger.warning("FaultClassifier skipped: %s", exc)
 
         feature_set.anomaly_result = ar
 
@@ -313,7 +316,7 @@ class EdgePipeline:
                 lectura_id = lectura_id,
             )
         except Exception as exc:
-            print(f"[EdgePipeline] Health score registration skipped: {exc}")
+            logger.warning("Health score registration skipped: %s", exc)
 
     # ── Fase 2C: alerts ───────────────────────────────────────────────────────
 
@@ -338,7 +341,7 @@ class EdgePipeline:
             try:
                 self._alert_fn(ar, self._feature_set_for_alert)
             except Exception as exc:
-                print(f"[EdgePipeline] Alert fn error: {exc}")
+                logger.error("Alert fn error: %s", exc)
             return
 
         try:
@@ -357,7 +360,7 @@ class EdgePipeline:
                 destinatarios  = list(self._config.anomaly.alert_emails),
             )
         except Exception as exc:
-            print(f"[EdgePipeline] Alert skipped: {exc}")
+            logger.warning("Alert skipped: %s", exc)
 
     # ── Fase 2C: RAW capture ──────────────────────────────────────────────────
 
@@ -379,7 +382,7 @@ class EdgePipeline:
         try:
             self._raw_capture.capture(reading, feature_set, lectura_id)
         except Exception as exc:
-            print(f"[EdgePipeline] RAW capture failed: {exc}")
+            logger.error("RAW capture failed: %s", exc)
 
     # ── Persist / flush / resolve ──────────────────────────────────────────────
 
@@ -392,8 +395,8 @@ class EdgePipeline:
                 self._buffer.push(payload, window_id=window_id)
             return lectura_id
         except Exception as exc:
-            print(f"[EdgePipeline] Supabase unavailable — buffering: "
-                  f"{type(exc).__name__}: {exc}")
+            logger.warning("Supabase unavailable, buffering locally: %s: %s",
+                           type(exc).__name__, exc)
             self._buffer.push(payload, window_id=window_id)
             return None
 
@@ -407,9 +410,9 @@ class EdgePipeline:
 
             n = self._buffer.flush(send_fn=send_fn)
             if n > 0:
-                print(f"[EdgePipeline] Flushed {n} offline reading(s) to Supabase")
+                logger.info("Flushed %d offline reading(s) to Supabase", n)
         except Exception as exc:
-            print(f"[EdgePipeline] Buffer flush error: {exc}")
+            logger.warning("Buffer flush error: %s", exc)
 
     def _resolve_maquina_id(self) -> None:
         machine_id = self._config.machine.machine_id

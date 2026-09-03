@@ -1,91 +1,129 @@
 # =============================================================================
-# AuraPredict — Edge Configuration Template
-# Copy and rename per machine: torno_cnc_1.yaml, fresadora_cnc_2.yaml, etc.
+# AuraPredict — Machine Configuration Template  (Fase 5A)
+# =============================================================================
+# Copy this file and rename it per machine: torno_cnc_1.yaml, fresadora_2.yaml
+#
+# DEPLOYMENT CHECKLIST:
+#   1. Set machine.id and machine.maquina_id (from Supabase DB)
+#   2. Set machine.empresa_id
+#   3. Set sensor.type ('mock' for PC dev, 'adxl345' for Raspberry Pi)
+#   4. If adxl345: verify i2c_address and i2c_bus
+#   5. Set buffer.base_dir to a persistent path (survives reboots)
+#   6. Set anomaly.model_base_dir to a persistent path
+#   7. Confirm sync.enabled based on network availability
 # =============================================================================
 
 machine:
   id: Torno_CNC_1             # Logical name — must match maquinas.nombre in DB
-  empresa_id: 1                # Integer PK in empresas table
-  tipo: torno_cnc              # torno_cnc | centro_mecanizado | fresadora_cnc
-  rpm_nominal: 3000.0          # Nameplate RPM (never used as rpm_real)
-  # maquina_id: 5              # Optional: integer PK in maquinas table.
-                               # If set, allows offline startup without DB lookup.
-                               # If absent, resolved from DB at pipeline startup.
+  empresa_id: 1               # Integer PK in empresas table
+  tipo: torno_cnc             # torno_cnc | centro_mecanizado | fresadora_cnc
+  rpm_nominal: 3000.0         # Nameplate RPM (used for context, NOT as real RPM)
+  # maquina_id: 5             # Optional: integer PK in maquinas table.
+                              # If set, enables offline startup without DB lookup.
+                              # If absent, resolved from DB at startup.
+
+# =============================================================================
+# SENSOR CONFIGURATION
+# =============================================================================
+# For PC development (no hardware):
+#   type: mock
+#
+# For Raspberry Pi with ADXL345:
+#   type: adxl345
+#   i2c_address: "0x53"   (ALT ADDRESS pin HIGH) or "0x1D" (ALT ADDRESS LOW)
+#   i2c_bus: 1            (GPIO 2/3 on Raspberry Pi)
+#   range_g: 2            (±2g best for low-vibration spindles; ±16g for heavy machinery)
+#   odr_hz: 3200          (ODR configured in sensor register — 400/800/1600/3200)
+# =============================================================================
 
 sensor:
-  type: mock                   # mock | adxl345 | iepe
-  sampling_rate_hz: 3200.0     # Target/configured sampling rate (Hz)
-  odr_hz: 3200.0               # ODR configured in sensor register (informational)
-                               # IMPORTANT: 3200 Hz is a configuration target,
-                               # NOT a hardware guarantee. Verify sampling_rate_actual
-                               # in logs before relying on FFT above Nyquist/2.
-  samples_per_window: 3200     # Samples per acquisition window (1 second at 3200 Hz)
-  axes: [x, y, z]
-  # i2c_address: "0x53"        # For ADXL345 (uncomment when using real hardware)
+  type: mock                  # mock | adxl345
+
+  # ── Hardware (only needed for adxl345) ──────────────────────────────────────
+  # Uncomment and set when deploying on Raspberry Pi:
+  # i2c_address: "0x53"     # Hex string: "0x53" or "0x1D"
+  # i2c_bus: 1              # I2C bus number (1 on most Raspberry Pi models)
+  # range_g: 2              # Accelerometer range: 2 | 4 | 8 | 16 (g)
+
+  # ── Sampling ────────────────────────────────────────────────────────────────
+  sampling_rate_hz: 3200.0    # Target sampling rate (Hz). Actual rate verified at runtime.
+  odr_hz: 3200.0              # ODR to configure in sensor register (must match hardware)
+                              # Supported: 400, 800, 1600, 3200 Hz for ADXL345
+  samples_per_window: 3200    # Samples per acquisition window (1s at 3200 Hz)
+                              # Reduce to 1600 for 800 Hz, etc.
+  axes: [x, y, z]            # Axes to capture
 
 preprocessing:
-  bandpass_low_hz: 10.0        # Low cutoff (Hz) — removes rigid body motion
-  bandpass_high_hz: 1000.0     # High cutoff (Hz) — must be < Nyquist (fs/2)
-  filter_order: 4              # Butterworth filter order
-  detrend: linear              # linear | constant
-  window_type: hann            # hann | hamming | blackman | flattop | rectangular
+  bandpass_low_hz: 10.0       # Low cutoff — removes rigid body motion below 10 Hz
+  bandpass_high_hz: 1000.0    # High cutoff — must be < Nyquist (sampling_rate_hz / 2)
+  filter_order: 4             # Butterworth filter order
+  detrend: linear             # linear | constant
+  window_type: hann           # hann | hamming | blackman | flattop | rectangular
   bands:
-    - {name: low,  low_hz: 10.0,  high_hz: 100.0}   # Low frequency band
-    - {name: mid,  low_hz: 100.0, high_hz: 500.0}   # Mid frequency band
-    - {name: high, low_hz: 500.0, high_hz: 1600.0}  # High frequency band
+    - {name: low,  low_hz: 10.0,  high_hz: 100.0}   # Imbalance, misalignment
+    - {name: mid,  low_hz: 100.0, high_hz: 500.0}   # Harmonics
+    - {name: high, low_hz: 500.0, high_hz: 1600.0}  # Bearings, resonances
 
 acquisition:
-  primary_axis: x              # Axis used for frequency-domain DB columns
-  include_total_axis: false    # Compute sqrt(x²+y²+z²) magnitude axis
-  interval_normal_s: 120.0     # Seconds between readings in normal operation
-  interval_anomaly_s: 30.0     # Seconds between readings when anomaly suspected
+  primary_axis: x             # Axis used for frequency-domain DB columns
+  include_total_axis: false   # Compute sqrt(x²+y²+z²) magnitude axis
+  interval_normal_s: 120.0    # Seconds between readings (normal operation)
+  interval_anomaly_s: 30.0    # Seconds between readings (anomaly suspected)
+
+# =============================================================================
+# OFFLINE BUFFER
+# =============================================================================
+# IMPORTANT: use a persistent directory that survives reboots on Raspberry Pi.
+# Recommended: /home/pi/aura-predict/data/buffer  (SD card, not /tmp)
 
 buffer:
-  base_dir: /tmp/aurapredict/buffer   # Local offline buffer directory
+  base_dir: /tmp/aurapredict/buffer   # Change to persistent path for production
   max_entries: 500                    # Max buffered readings before oldest is dropped
+                                      # 500 readings at 2h intervals ≈ 42 days offline
 
 anomaly:
   # ── Baseline / cold start ──────────────────────────────────────────────────
-  # The system starts with a Z-score detector and transitions to Isolation Forest
-  # once enough 'normal' readings have been accumulated.
-  baseline_min_samples: 50           # Minimum normal readings before activating IF
-  update_every_n: 20                 # Retrain IF after every N new normal readings
-  baseline_window_n: 200             # Rolling buffer size (readings kept in memory)
-  z_score_threshold: 3.0             # Sigma threshold for cold-start Z-score detection
+  baseline_min_samples: 50       # Min normal readings before Isolation Forest activates
+                                  # At 2h intervals: 50 readings ≈ 4 days
+  update_every_n: 20             # Retrain IF after N new normal readings
+  baseline_window_n: 200         # Rolling buffer size for baseline computation
+  z_score_threshold: 3.0         # σ threshold for cold-start Z-score detection
 
   # ── Isolation Forest ────────────────────────────────────────────────────────
   if_n_estimators: 50
-  if_contamination: "auto"           # 'auto' or a float in [0.0, 0.5]
+  if_contamination: "auto"       # 'auto' or a float in [0.0, 0.5]
+  # IMPORTANT: use a persistent directory for models on Raspberry Pi.
+  # Recommended: /home/pi/aura-predict/data/models
   model_base_dir: /tmp/aurapredict/models
 
   # ── Health score thresholds ─────────────────────────────────────────────────
-  health_watch: 75                   # score ≥ 75 → OK - Sano / Bajo
-  health_warning: 50                 # score ≥ 50 → ADVERTENCIA / Medio
-  health_alert: 25                   # score ≥ 25 → ALERTA / Alto
-                                     # score <  25 → NOK - Anomalía / CRÍTICO
-  quality_min_threshold: 0.5         # Signal quality below this → health_score=None
+  health_watch: 75               # score ≥ 75 → OK - Sano / Bajo
+  health_warning: 50             # score ≥ 50 → ADVERTENCIA / Medio
+  health_alert: 25               # score ≥ 25 → ALERTA / Alto
+                                 # score <  25 → NOK - Anomalía / CRÍTICO
+  quality_min_threshold: 0.5     # Signal quality below this → health_score=None
 
   # ── RAW capture ─────────────────────────────────────────────────────────────
-  capture_threshold: 50              # health_score below this triggers RAW save
-  capture_cooldown_s: 3600.0         # Minimum seconds between RAW captures (1 hour)
-  raw_base_dir: /tmp/aurapredict/raw # Directory for .npz raw event files
+  capture_threshold: 50          # health_score below this triggers RAW save
+  capture_cooldown_s: 3600.0     # 1 hour between RAW captures
+  # IMPORTANT: use a persistent directory for RAW files on Raspberry Pi.
+  # Recommended: /home/pi/aura-predict/data/raw
+  raw_base_dir: /tmp/aurapredict/raw
 
   # ── Alerts ──────────────────────────────────────────────────────────────────
-  alert_cooldown_hours: 1.0          # Minimum hours between alerts per machine
-  alert_emails: []                   # Email recipients (empty = no email in MVP)
-
-sync:
-  # ── Supabase Storage synchronisation (Fase 2D) ────────────────────────────
-  # Set enabled: false to run in fully offline / local-only mode.
-  enabled: true
-  raw_bucket: aurapredict-raw-events    # bucket for .npz raw event files
-  model_bucket: aurapredict-models      # bucket for .joblib model files
-  max_raw_per_cycle: 5                  # max uploads per acquisition cycle
+  alert_cooldown_hours: 1.0      # Minimum hours between alerts per machine
+  alert_emails: []               # Set via EMAIL_DESTINO env var or list here
+                                 # Example: ["tecnico@empresa.com"]
 
 scheduler:
-  # ── Edge Scheduler (Fase 3) ────────────────────────────────────────────────
   enabled: true
-  run_24_7: true                    # No time-of-day restrictions
-  interval_normal_minutes: 120      # health >= 75 → every 2 hours
-  interval_watch_minutes: 30        # health 50-74 → every 30 minutes
-  interval_alert_minutes: 5         # health < 50  → every 5 minutes
+  run_24_7: true                 # No time-of-day restrictions (24/7 operation)
+  interval_normal_minutes: 120   # health >= 75 → every 2 hours
+  interval_watch_minutes: 30     # health 50-74 → every 30 minutes
+  interval_alert_minutes: 5      # health < 50  → every 5 minutes
+
+sync:
+  enabled: true                  # Set to false for offline-only mode
+  raw_bucket: aurapredict-raw-events
+  model_bucket: aurapredict-models
+  max_raw_per_cycle: 5           # Max uploads per acquisition cycle (throttle)

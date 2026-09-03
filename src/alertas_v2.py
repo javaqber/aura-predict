@@ -33,9 +33,12 @@ Usage (called from EdgePipeline._maybe_send_alert in Fase 3 Step 2):
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from typing import Optional, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 # Add src/ to path so sibling modules are importable
 _SRC = os.path.dirname(__file__)
@@ -155,7 +158,7 @@ def maybe_enviar_alerta_cnc(
             enviado   = True
         except Exception as exc:
             error_msg = str(exc)[:200]
-            print(f"[alertas_v2] SMTP failed for {machine_name}: {exc}")
+            logger.error("SMTP failed for %s: %s", machine_name, exc)
     else:
         error_msg = "EMAIL_ACTIVO=false — alert logged but not emailed"
 
@@ -192,7 +195,11 @@ def _check_cooldown(
             from alertas import _puede_enviar
             return _puede_enviar(str(maquina_id))
         except Exception:
-            return True  # if both fail, allow the alert (safe default)
+            logger.info(
+        "Alert processed for maquina_id=%d: tipo=%s, enviado=%s",
+        maquina_id, tipo, enviado,
+    )
+    return True  # if both fail, allow the alert (safe default)
 
 
 def _registrar(
@@ -221,7 +228,7 @@ def _registrar(
             error_msg    = error_msg,
         )
     except Exception as exc:
-        print(f"[alertas_v2] Could not register alert in BD: {exc}")
+        logger.warning("Could not register alert in BD: %s", exc)
         return None
 
 

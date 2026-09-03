@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import signal
 import sys
@@ -37,6 +38,10 @@ from typing import Callable, Optional
 
 # Add src/ to path
 sys.path.insert(0, os.path.dirname(__file__))
+
+from edge.logging_config import setup_logging
+
+logger = logging.getLogger("edge_scheduler")
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -116,9 +121,15 @@ def run_scheduler(
 
     state = SchedulerState()
 
+    # ── Logging setup ─────────────────────────────────────────────────────────
+    import os as _os
+    log_level = _os.getenv("LOG_LEVEL", "INFO")
+    log_file  = _os.getenv("LOG_FILE")
+    setup_logging(level=log_level, log_file=log_file)
+
     # ── Graceful shutdown on SIGINT/SIGTERM ────────────────────────────────────
     def _handle_signal(signum, frame):
-        print(f"\n[Scheduler] Signal {signum} received — shutting down gracefully…")
+        logger.warning("Signal %d received — shutting down gracefully…", signum)
         state.running = False
 
     signal.signal(signal.SIGINT,  _handle_signal)
@@ -128,13 +139,13 @@ def run_scheduler(
     try:
         config = EdgeConfig.from_yaml(config_path)
     except Exception as exc:
-        print(f"[Scheduler] FATAL: cannot load config from {config_path}: {exc}")
+        logger.critical("Cannot load config from %s: %s", config_path, exc)
         sys.exit(1)
 
     sc = config.scheduler  # SchedulerConfig
 
     if not sc.enabled:
-        print("[Scheduler] scheduler.enabled=false in config — exiting.")
+        logger.info("scheduler.enabled=false — exiting")
         return
 
     state.current_interval = sc.interval_normal_minutes
@@ -149,17 +160,17 @@ def run_scheduler(
 
     try:
         pipeline.startup()
-        print("[Scheduler] Pipeline started successfully.\n")
+        logger.info("Pipeline started successfully")
     except Exception as exc:
-        print(f"[Scheduler] FATAL: pipeline.startup() failed: {exc}")
+        logger.critical("pipeline.startup() failed: %s", exc)
         sys.exit(1)
 
     # ── Main loop ──────────────────────────────────────────────────────────────
     while state.running:
         cycle_start = datetime.now(timezone.utc)
-        ts = cycle_start.strftime("%Y-%m-%d %H:%M:%S UTC")
-
-        print(f"[{ts}] ▶ Starting acquisition cycle…")
+        logger.info("▶ Starting acquisition cycle %d (ok=%d, err=%d)",
+                      state.cycles_ok + state.cycles_error + 1,
+                      state.cycles_ok, state.cycles_error)
 
         health_score = _run_one_cycle(pipeline, state)
 
@@ -174,8 +185,7 @@ def run_scheduler(
         )
 
         if new_interval != state.current_interval:
-            print(f"[Scheduler] Interval changed: {state.current_interval}min "
-                  f"→ {new_interval}min (health={health_score})")
+            logger.info("Interval changed: %dmin → %dmin (health=%s)", state.current_interval, new_interval, health_score)
             state.current_interval = new_interval
 
         state.last_health_score = health_score
@@ -183,20 +193,18 @@ def run_scheduler(
         elapsed_s = (datetime.now(timezone.utc) - cycle_start).total_seconds()
         sleep_s   = max(0, state.current_interval * 60 - elapsed_s)
 
-        print(f"[Scheduler] Cycle done in {elapsed_s:.1f}s. "
-              f"Next in {state.current_interval}min. "
-              f"(ok={state.cycles_ok}, err={state.cycles_error})")
+        logger.info("Cycle done in %.1fs. Next in %dmin. (ok=%d, err=%d)", elapsed_s, state.current_interval, state.cycles_ok, state.cycles_error)
 
         # Sleep in 10s chunks so SIGINT is handled promptly
         _interruptible_sleep(sleep_s, state, sleep_fn)
 
     # ── Shutdown ───────────────────────────────────────────────────────────────
-    print("\n[Scheduler] Shutting down pipeline…")
+    logger.info("Shutting down pipeline…")
     try:
         pipeline.shutdown()
     except Exception:
         pass
-    print("[Scheduler] Stopped.")
+    logger.info("Stopped")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -212,7 +220,7 @@ def _run_one_cycle(pipeline, state: SchedulerState) -> Optional[int]:
         state.cycles_ok += 1
 
         if feature_set is None:
-            print("[Scheduler] Cycle skipped: sensor error on all axes.")
+            logger.warning("Cycle skipped: sensor error on all axes")
             return state.last_health_score  # keep previous interval
 
         ar = feature_set.anomaly_result
@@ -221,16 +229,15 @@ def _run_one_cycle(pipeline, state: SchedulerState) -> Optional[int]:
             health    = ar.health_score
             riesgo    = ar.nivel_riesgo
             score_str = f"health={health}" if health is not None else "health=?"
-            print(f"[Scheduler] {resultado} | {riesgo} | {score_str} "
-                  f"| score={ar.anomaly_score:.3f}")
+            logger.info("Cycle result: %s | %s | %s | score=%.3f", resultado, riesgo, score_str, ar.anomaly_score)
             return health
 
-        print("[Scheduler] Cycle complete (no anomaly result yet).")
+        logger.info("Cycle complete (no anomaly result yet)")
         return None
 
     except Exception as exc:
         state.cycles_error += 1
-        print(f"[Scheduler] ⚠ Cycle error (continuing): {type(exc).__name__}: {exc}")
+        logger.error("Cycle error (continuing): %s: %s", type(exc).__name__, exc)
         return state.last_health_score
 
 
@@ -248,41 +255,57 @@ def _interruptible_sleep(
 
 
 def _create_pipeline(config):
-    """Create a real EdgePipeline for production use."""
+    """Create a real EdgePipeline using the sensor selected in config."""
     from edge.pipeline.pipeline import EdgePipeline
-    from edge.sensors.mock_sensor import MockSensor, MockSensorParams
+    from edge.sensors.sensor_factory import create_sensor
 
-    # Sensor: MockSensor for now (real ADXL345 sensor arrives in a future phase)
-    sensor = MockSensor(config.sensor, MockSensorParams())
-
+    sensor = create_sensor(config.sensor)
+    logger.debug("Pipeline created with sensor type: %s", config.sensor.sensor_type)
     return EdgePipeline(config=config, sensor=sensor)
 
 
 def _print_banner(config, sc) -> None:
-    print("=" * 60)
-    print("  🔮 AuraPredict — Edge Scheduler v2")
-    print("=" * 60)
-    print(f"  Machine   : {config.machine.machine_id}")
-    print(f"  maquina_id: {config.machine.maquina_id or '(pending resolution)'}")
-    print(f"  empresa_id: {config.machine.empresa_id}")
-    print(f"  Mode      : 24/7 (no time restrictions)")
-    print(f"  Intervals : normal={sc.interval_normal_minutes}min "
-          f"/ watch={sc.interval_watch_minutes}min "
-          f"/ alert={sc.interval_alert_minutes}min")
-    print("=" * 60 + "\n")
+    logger.info("=" * 58)
+    logger.info("  AuraPredict — Edge Scheduler v2")
+    logger.info("  Machine   : %s", config.machine.machine_id)
+    logger.info("  maquina_id: %s", config.machine.maquina_id or "(pending resolution)")
+    logger.info("  empresa_id: %s", config.machine.empresa_id)
+    logger.info("  Sensor    : %s", config.sensor.sensor_type)
+    logger.info("  Intervals : normal=%dmin / watch=%dmin / alert=%dmin",
+                sc.interval_normal_minutes, sc.interval_watch_minutes, sc.interval_alert_minutes)
+    logger.info("=" * 58)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="AuraPredict Edge Scheduler v2"
+        description="AuraPredict Edge Scheduler v2",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Use default config (MAQUINA_CONFIG env var or example_cnc.yaml)
+  python src/edge_scheduler.py
+
+  # Specify config explicitly
+  python src/edge_scheduler.py --config config/machines/torno_cnc_1.yaml
+
+  # Run as module (Raspberry Pi production)
+  python -m edge_scheduler --config /home/pi/aura-predict/config/machines/torno_cnc_1.yaml
+
+Environment variables:
+  MAQUINA_CONFIG  Path to machine YAML config (overridden by --config)
+  LOG_LEVEL       Logging level: DEBUG/INFO/WARNING/ERROR (default: INFO)
+  LOG_FILE        Optional file path for log output
+  EMAIL_ACTIVO    Set to 'true' to enable SMTP alert emails
+  SUPABASE_URL    Supabase project URL (required for Storage sync)
+  SUPABASE_SERVICE_ROLE_KEY  Supabase service role key
+        """,
     )
     parser.add_argument(
         "--config", "-c",
         default=DEFAULT_CONFIG,
-        help="Path to the machine YAML config file "
-             f"(default: $MAQUINA_CONFIG or {DEFAULT_CONFIG})",
+        help=f"Path to machine YAML config (default: $MAQUINA_CONFIG or {DEFAULT_CONFIG})",
     )
     args = parser.parse_args()
     run_scheduler(args.config)

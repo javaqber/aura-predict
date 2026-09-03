@@ -1,0 +1,63 @@
+# =============================================================
+# AuraPredict — Edge Scheduler systemd service
+#
+# Installation:
+#   1. Edit WorkingDirectory and EnvironmentFile paths below
+#   2. sudo cp aurapredict-edge.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable aurapredict-edge
+#   5. sudo systemctl start aurapredict-edge
+#
+# Management:
+#   sudo systemctl status  aurapredict-edge
+#   sudo journalctl -u     aurapredict-edge -f
+#   sudo systemctl restart aurapredict-edge
+#   sudo systemctl stop    aurapredict-edge
+# =============================================================
+
+[Unit]
+Description=AuraPredict Edge Scheduler (CNC predictive maintenance)
+Documentation=https://github.com/javaqber/aura-predict
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+
+# Project directory — adjust to your installation path
+WorkingDirectory=/home/pi/aura-predict
+
+# Load .env file with credentials (never commit .env to Git)
+EnvironmentFile=/home/pi/aura-predict/.env
+
+# Machine config to use (can also be set in EnvironmentFile)
+Environment="MAQUINA_CONFIG=/home/pi/aura-predict/config/machines/torno_cnc_1.yaml"
+Environment="LOG_LEVEL=INFO"
+Environment="APP_ENV=production"
+
+# Log to journald (use journalctl -u aurapredict-edge to view)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aurapredict-edge
+
+# Start command
+ExecStart=/home/pi/aura-predict/venv/bin/python \
+    src/edge_scheduler.py \
+    --config /home/pi/aura-predict/config/machines/torno_cnc_1.yaml
+
+# Restart policy: always restart (sensor errors are handled inside the loop)
+Restart=always
+RestartSec=30s
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/pi/aura-predict/data
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target

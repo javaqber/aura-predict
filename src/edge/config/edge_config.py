@@ -212,6 +212,18 @@ class EdgeConfig:
 
         # ── SensorConfig (existing Fase 1 class — not modified) ───────────────
         s = data.get("sensor", {})
+        # Build extra dict with hardware-specific params not in base SensorConfig
+        sensor_extra = {}
+        if s.get("i2c_bus") is not None:
+            sensor_extra["i2c_bus"] = int(s["i2c_bus"])
+        if s.get("range_g") is not None:
+            sensor_extra["range_g"] = int(s["range_g"])
+        # odr_register / range_register can be overridden directly for advanced use
+        if s.get("odr_register") is not None:
+            sensor_extra["odr_register"] = int(s["odr_register"], 16)                 if isinstance(s["odr_register"], str) else int(s["odr_register"])
+        if s.get("range_register") is not None:
+            sensor_extra["range_register"] = int(s["range_register"], 16)                 if isinstance(s["range_register"], str) else int(s["range_register"])
+
         sensor = SensorConfig(
             sensor_id          = m.get("id", "edge_sensor"),
             sensor_type        = s.get("type", "mock"),
@@ -220,6 +232,7 @@ class EdgeConfig:
             samples_per_window = int(s.get("samples_per_window", 3200)),
             axes               = list(s.get("axes", ["x", "y", "z"])),
             i2c_address        = s.get("i2c_address"),
+            extra              = sensor_extra,
         )
 
         # ── SignalConfig (existing Fase 1 class — not modified) ───────────────

@@ -56,12 +56,15 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Optional, Any
 
 import numpy as np
 
 from .base_sensor import SensorInterface, SensorConfig, SensorReading, SensorConfigurationError
+
+logger = logging.getLogger(__name__)
 
 
 # ── ADXL345 Register Map ───────────────────────────────────────────────────────
@@ -76,12 +79,20 @@ DEVID_EXPECTED  = 0xE5     # Factory identifier, confirms correct device
 
 # ODR register values → sample rate in Hz
 _ODR_MAP: dict[int, float] = {
+    0x0A: 100.0,
+    0x0B: 200.0,
     0x0C: 400.0,
     0x0D: 800.0,
     0x0E: 1600.0,
     0x0F: 3200.0,
 }
 _ODR_DEFAULT = 0x0F          # 3200 Hz
+
+# Reverse map: Hz → ODR register
+_HZ_TO_ODR: dict[float, int] = {v: k for k, v in _ODR_MAP.items()}
+
+# Range (g) → DATA_FORMAT register bits [1:0]
+_RANGE_G_TO_REG: dict[int, int] = {2: 0x00, 4: 0x01, 8: 0x02, 16: 0x03}
 
 # Range / scale factor
 # DATA_FORMAT register bits [1:0]: 00=±2g, 01=±4g, 10=±8g, 11=±16g
@@ -127,8 +138,24 @@ class ADXL345Sensor(SensorInterface):
         self._bus: Optional[Any] = bus   # injected or created in configure()
         self._addr: int = self._parse_address(config.i2c_address)
         self._scale: float = _SCALE_FACTOR_DEFAULT
-        self._odr_reg: int = config.extra.get("odr_register", _ODR_DEFAULT)
-        self._range_reg: int = config.extra.get("range_register", _RANGE_DEFAULT)
+        self._i2c_bus_number: int = int(config.extra.get("i2c_bus", 1))
+
+        # ODR register: explicit > derived from odr_hz > default (3200 Hz)
+        if "odr_register" in config.extra:
+            self._odr_reg = int(config.extra["odr_register"])
+        elif config.odr_hz is not None:
+            self._odr_reg = self._hz_to_odr_register(config.odr_hz)
+        else:
+            self._odr_reg = _ODR_DEFAULT
+
+        # Range register: explicit > derived from range_g (human-readable) > default (±2g)
+        if "range_register" in config.extra:
+            self._range_reg = int(config.extra["range_register"])
+        elif "range_g" in config.extra:
+            self._range_reg = _RANGE_G_TO_REG.get(int(config.extra["range_g"]), _RANGE_DEFAULT)
+        else:
+            self._range_reg = _RANGE_DEFAULT
+
         self._configured: bool = False
 
     # ── SensorInterface implementation ─────────────────────────────────────────
@@ -150,7 +177,8 @@ class ADXL345Sensor(SensorInterface):
         try:
             if self._bus is None:
                 import smbus2
-                self._bus = smbus2.SMBus(1)
+                self._bus = smbus2.SMBus(self._i2c_bus_number)
+                logger.debug("Opened I2C bus %d", self._i2c_bus_number)
 
             # Verify device identity
             devid = self._bus.read_i2c_block_data(self._addr, REG_DEVID, 1)[0]
@@ -175,6 +203,13 @@ class ADXL345Sensor(SensorInterface):
             self._bus.write_byte_data(self._addr, REG_POWER_CTL, 0x08)
 
             self._configured = True
+            logger.info(
+                "ADXL345 configured: addr=0x%02X, odr_reg=0x%02X (%.0f Hz), "
+                "range_reg=0x%02X (scale=%.4f g/LSB)",
+                self._addr, self._odr_reg,
+                _ODR_MAP.get(self._odr_reg, 0),
+                self._range_reg, self._scale,
+            )
 
         except SensorConfigurationError:
             raise
@@ -224,6 +259,7 @@ class ADXL345Sensor(SensorInterface):
                 axes_data["z"][i] = az
                 timestamps[i]     = t_sample
         except Exception as exc:
+            logger.error("ADXL345 read error at sample %d: %s", i, exc)
             raise RuntimeError(f"ADXL345 read error: {exc}") from exc
 
         t_end = time.time()
@@ -281,6 +317,16 @@ class ADXL345Sensor(SensorInterface):
         if value >= 0x8000:
             value -= 0x10000
         return value
+
+    @staticmethod
+    def _hz_to_odr_register(hz: float) -> int:
+        """Map a sampling rate in Hz to the nearest ADXL345 ODR register value."""
+        if hz <= 100:   return 0x0A
+        if hz <= 200:   return 0x0B
+        if hz <= 400:   return 0x0C
+        if hz <= 800:   return 0x0D
+        if hz <= 1600:  return 0x0E
+        return 0x0F  # 3200 Hz — maximum
 
     @staticmethod
     def _parse_address(i2c_address: Optional[str]) -> int:
