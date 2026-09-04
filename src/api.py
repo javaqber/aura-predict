@@ -584,3 +584,236 @@ def entrenar_modelo_v2(
         ),
         "action": "automatic_via_baseline_manager",
     }
+
+
+# ─── ENDPOINTS v2 — REPORTING (Fase 6) ───────────────────────────────────────
+
+def _get_reporting_path():
+    import sys as _sys
+    _src = os.path.join(os.path.dirname(__file__), '..')
+    if _src not in _sys.path:
+        _sys.path.insert(0, _src)
+
+@app.get("/v2/maquinas/{maquina_id}/exportar/csv")
+def exportar_csv_v2(
+    maquina_id:   int,
+    tipo:         str  = "readings",
+    fecha_desde:  str  = None,
+    fecha_hasta:  str  = None,
+    current_user: dict = Depends(get_usuario_actual),
+):
+    """
+    Export machine data as CSV.
+    tipo: readings | health_history | anomalies | alerts
+    fecha_desde / fecha_hasta: ISO8601 strings (YYYY-MM-DD)
+    """
+    from fastapi.responses import Response
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+    _verificar_maquina_empresa(maquina_id, empresa_id)
+
+    try:
+        _get_reporting_path()
+        from reporting.exporter import export_csv
+        from datetime import datetime
+        fd = datetime.fromisoformat(fecha_desde) if fecha_desde else None
+        fh = datetime.fromisoformat(fecha_hasta) if fecha_hasta else None
+        data = export_csv(maquina_id, tipo=tipo, fecha_desde=fd, fecha_hasta=fh,
+                          empresa_id=empresa_id)
+        filename = f"aurapredict_{maquina_id}_{tipo}.csv"
+        return Response(content=data, media_type="text/csv",
+                        headers={"Content-Disposition": f"attachment; filename={filename}"})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Export error: {exc}")
+
+
+@app.get("/v2/maquinas/{maquina_id}/exportar/excel")
+def exportar_excel_v2(
+    maquina_id:   int,
+    fecha_desde:  str  = None,
+    fecha_hasta:  str  = None,
+    current_user: dict = Depends(get_usuario_actual),
+):
+    """Export all machine data as a multi-sheet Excel workbook."""
+    from fastapi.responses import Response
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+    _verificar_maquina_empresa(maquina_id, empresa_id)
+
+    try:
+        _get_reporting_path()
+        from reporting.exporter import export_excel
+        from datetime import datetime
+        fd = datetime.fromisoformat(fecha_desde) if fecha_desde else None
+        fh = datetime.fromisoformat(fecha_hasta) if fecha_hasta else None
+        data = export_excel(maquina_id, fecha_desde=fd, fecha_hasta=fh, empresa_id=empresa_id)
+        filename = f"aurapredict_{maquina_id}_informe.xlsx"
+        return Response(
+            content=data,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Export error: {exc}")
+
+
+@app.get("/v2/maquinas/{maquina_id}/informe")
+def informe_maquina_v2(
+    maquina_id:   int,
+    fecha_desde:  str = None,
+    fecha_hasta:  str = None,
+    current_user: dict = Depends(get_usuario_actual),
+):
+    """Generate an HTML machine report viewable in the browser."""
+    from fastapi.responses import HTMLResponse
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+    _verificar_maquina_empresa(maquina_id, empresa_id)
+
+    try:
+        _get_reporting_path()
+        from reporting.report_machine import generate_machine_report
+        from datetime import datetime
+        fd = datetime.fromisoformat(fecha_desde) if fecha_desde else None
+        fh = datetime.fromisoformat(fecha_hasta) if fecha_hasta else None
+        html_bytes = generate_machine_report(
+            maquina_id=maquina_id, fecha_desde=fd, fecha_hasta=fh, empresa_id=empresa_id)
+        return HTMLResponse(content=html_bytes.decode("utf-8"))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Report error: {exc}")
+
+
+@app.get("/v2/empresa/informe-planta")
+def informe_planta_v2(
+    fecha_desde:  str = None,
+    fecha_hasta:  str = None,
+    current_user: dict = Depends(get_usuario_actual),
+):
+    """Generate an HTML plant-level report for all machines in the company."""
+    from fastapi.responses import HTMLResponse
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+
+    try:
+        _get_reporting_path()
+        from reporting.report_plant import generate_plant_report
+        from datetime import datetime
+        fd = datetime.fromisoformat(fecha_desde) if fecha_desde else None
+        fh = datetime.fromisoformat(fecha_hasta) if fecha_hasta else None
+        html_bytes = generate_plant_report(empresa_id=empresa_id, fecha_desde=fd, fecha_hasta=fh)
+        return HTMLResponse(content=html_bytes.decode("utf-8"))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Report error: {exc}")
+
+
+@app.post("/v2/maquinas/{maquina_id}/ground-truth/mantenimiento")
+def registrar_mantenimiento_v2(
+    maquina_id:   int,
+    datos:        dict,
+    current_user: dict = Depends(get_usuario_actual),
+):
+    """Register a maintenance event (ground truth label)."""
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+    _verificar_maquina_empresa(maquina_id, empresa_id)
+
+    try:
+        _get_reporting_path()
+        from reporting.ground_truth import registrar_mantenimiento, MaintenanceEventInput
+        from datetime import datetime
+        evento = MaintenanceEventInput(
+            maquina_id     = maquina_id,
+            empresa_id     = empresa_id,
+            maintenance_at = datetime.fromisoformat(datos.get("maintenance_at", "")),
+            tipo           = datos.get("tipo", "correctivo"),
+            componente     = datos.get("componente"),
+            descripcion    = datos.get("descripcion"),
+            tiempo_parada_h= datos.get("tiempo_parada_h"),
+            coste_euros    = datos.get("coste_euros"),
+            tecnico        = datos.get("tecnico"),
+            alertado_por_ia= datos.get("alertado_por_ia", False),
+            dias_anticipacion = datos.get("dias_anticipacion"),
+            registrado_por = current_user.get("usuario_id"),
+        )
+        new_id = registrar_mantenimiento(evento)
+        return {"success": new_id is not None, "id": new_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Error: {exc}")
+
+
+@app.post("/v2/maquinas/{maquina_id}/ground-truth/fallo")
+def registrar_fallo_v2(
+    maquina_id:   int,
+    datos:        dict,
+    current_user: dict = Depends(get_usuario_actual),
+):
+    """Register a confirmed machine failure (ground truth label for ML)."""
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+    _verificar_maquina_empresa(maquina_id, empresa_id)
+
+    try:
+        _get_reporting_path()
+        from reporting.ground_truth import registrar_fallo, FailureEventInput
+        from datetime import datetime
+        evento = FailureEventInput(
+            maquina_id             = maquina_id,
+            empresa_id             = empresa_id,
+            failure_at             = datetime.fromisoformat(datos.get("failure_at", "")),
+            tipo_fallo             = datos.get("tipo_fallo"),
+            componente             = datos.get("componente"),
+            descripcion            = datos.get("descripcion"),
+            primera_anomalia_ts    = datetime.fromisoformat(datos["primera_anomalia_ts"]) if datos.get("primera_anomalia_ts") else None,
+            tiempo_deteccion_dias  = datos.get("tiempo_deteccion_dias"),
+            diagnostico_ia         = datos.get("diagnostico_ia"),
+            diagnostico_confirmado = datos.get("diagnostico_confirmado"),
+            tiempo_parada_h        = datos.get("tiempo_parada_h"),
+            coste_euros            = datos.get("coste_euros"),
+            tecnico                = datos.get("tecnico"),
+            registrado_por         = current_user.get("usuario_id"),
+        )
+        new_id = registrar_fallo(evento)
+        return {"success": new_id is not None, "id": new_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Error: {exc}")
+
+
+@app.get("/v2/empresa/ground-truth/exportar")
+def exportar_ground_truth_v2(
+    maquina_id:   int   = None,
+    current_user: dict  = Depends(get_usuario_actual),
+):
+    """Export all ground truth labels as CSV for ML training."""
+    from fastapi.responses import Response
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+
+    try:
+        _get_reporting_path()
+        from reporting.ground_truth import exportar_ground_truth_csv
+        data = exportar_ground_truth_csv(empresa_id=empresa_id, maquina_id=maquina_id)
+        return Response(content=data, media_type="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=ground_truth.csv"})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Export error: {exc}")

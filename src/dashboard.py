@@ -1039,6 +1039,124 @@ def _render_modelos_ml():
                 except Exception as exc:
                     st.error(f"Error de conexión: {exc}")
 
+
+def _render_reporting():
+    """Dashboard section for exports, reports and ground truth (Fase 6)."""
+    st.subheader("📄 Reporting y exportación de datos")
+
+    if st.session_state.get("empresa_id") is None:
+        st.warning("Inicia sesión para acceder al reporting.")
+        return
+
+    rep_tab1, rep_tab2, rep_tab3 = st.tabs(
+        ["📊 Exportar datos", "📝 Informe de máquina / planta", "🏷️ Ground Truth"]
+    )
+
+    with rep_tab1:
+        st.markdown("### Exportar datos históricos")
+        st.caption("Descarga los datos directamente desde los botones de la API v2.")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            maquina_id_exp = st.number_input("Máquina ID", min_value=1, value=1, step=1, key="rep_mid")
+            tipo_exp = st.selectbox("Tipo de datos", ["readings","health_history","anomalies","alerts"], key="rep_tipo")
+            fecha_desde_exp = st.date_input("Desde", value=None, key="rep_desde")
+            fecha_hasta_exp = st.date_input("Hasta", value=None, key="rep_hasta")
+        with col_b:
+            st.markdown("&nbsp;")
+            fd_str = str(fecha_desde_exp) if fecha_desde_exp else ""
+            fh_str = str(fecha_hasta_exp) if fecha_hasta_exp else ""
+            params = f"?tipo={tipo_exp}"
+            if fd_str: params += f"&fecha_desde={fd_str}"
+            if fh_str: params += f"&fecha_hasta={fh_str}"
+            csv_url  = f"{API_BASE_URL}/v2/maquinas/{maquina_id_exp}/exportar/csv{params}"
+            xlsx_url = f"{API_BASE_URL}/v2/maquinas/{maquina_id_exp}/exportar/excel"
+            if fd_str: xlsx_url += f"?fecha_desde={fd_str}"
+            if fh_str: xlsx_url += ("&" if fd_str else "?") + f"fecha_hasta={fh_str}"
+
+            st.markdown(f"[⬇ Descargar CSV]({csv_url})")
+            st.markdown(f"[⬇ Descargar Excel (todos los datos)]({xlsx_url})")
+            st.caption("Los enlaces requieren que la API esté activa y autenticada.")
+
+    with rep_tab2:
+        st.markdown("### Informes HTML")
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            maquina_id_rep = st.number_input("Máquina ID", min_value=1, value=1, step=1, key="rep_mid2")
+            fd2 = st.date_input("Desde", value=None, key="rep_desde2")
+            fh2 = st.date_input("Hasta", value=None, key="rep_hasta2")
+        with col_r2:
+            st.markdown("&nbsp;")
+            fd2_str = str(fd2) if fd2 else ""
+            fh2_str = str(fh2) if fh2 else ""
+            params2 = ""
+            if fd2_str: params2 += f"?fecha_desde={fd2_str}"
+            if fh2_str: params2 += ("&" if fd2_str else "?") + f"fecha_hasta={fh2_str}"
+            inf_url   = f"{API_BASE_URL}/v2/maquinas/{maquina_id_rep}/informe{params2}"
+            planta_url = f"{API_BASE_URL}/v2/empresa/informe-planta{params2}"
+            st.markdown(f"[📝 Ver informe de máquina {maquina_id_rep}]({inf_url})")
+            st.markdown(f"[🏭 Ver informe de planta]({planta_url})")
+            st.caption("Los informes se abren en el navegador. Usa Ctrl+P para imprimir/PDF.")
+
+    with rep_tab3:
+        st.markdown("### Ground Truth — Registro de fallos confirmados")
+        st.info(
+            "Registra los fallos reales confirmados por el técnico. "
+            "Estos datos son la base para el entrenamiento supervisado futuro. "
+            "El sistema compara el diagnóstico de la IA con el diagnóstico real."
+        )
+
+        with st.expander("➕ Registrar nuevo fallo confirmado"):
+            with st.form("form_fallo"):
+                col_f1, col_f2 = st.columns(2)
+                with col_f1:
+                    mid_gt   = st.number_input("Máquina ID", min_value=1, value=1, step=1)
+                    fail_at  = st.date_input("Fecha del fallo")
+                    tipo_fallo = st.selectbox("Tipo de fallo confirmado",
+                        ["bearing_fault","imbalance","lubrication","looseness","other","unknown"])
+                    componente = st.text_input("Componente afectado (ej: rodamiento_husillo)")
+                with col_f2:
+                    dias_prev = st.number_input("Días de anticipación de la IA", min_value=0, value=0, step=1,
+                                                help="Cuántos días antes detectó la IA el problema")
+                    diag_ia   = st.text_input("Diagnóstico de la IA", placeholder="Lo que dijo AuraPredict")
+                    diag_conf = st.text_input("Diagnóstico confirmado (técnico)", placeholder="Lo que encontró el técnico")
+                    tecnico   = st.text_input("Técnico responsable")
+                descripcion = st.text_area("Observaciones / descripción")
+                submitted = st.form_submit_button("💾 Registrar fallo")
+
+            if submitted:
+                try:
+                    import requests as _req
+                    from datetime import datetime as _dt
+                    payload = {
+                        "failure_at":             str(fail_at) + "T00:00:00",
+                        "tipo_fallo":             tipo_fallo,
+                        "componente":             componente or None,
+                        "descripcion":            descripcion or None,
+                        "tiempo_deteccion_dias":  int(dias_prev) if dias_prev else None,
+                        "diagnostico_ia":         diag_ia or None,
+                        "diagnostico_confirmado": diag_conf or None,
+                        "tecnico":                tecnico or None,
+                    }
+                    r = _req.post(
+                        f"{API_BASE_URL}/v2/maquinas/{mid_gt}/ground-truth/fallo",
+                        json=payload, headers=_api_headers(), timeout=10,
+                    )
+                    if r.status_code == 200:
+                        st.success(f"✅ Fallo registrado correctamente (id={r.json().get('id')})")
+                    else:
+                        st.error(f"Error: {r.json().get('detail', r.text)}")
+                except Exception as exc:
+                    st.error(f"Error de conexión: {exc}")
+
+        st.markdown("---")
+        st.markdown("**Exportar dataset de ground truth (para entrenamiento ML)**")
+        gt_url = f"{API_BASE_URL}/v2/empresa/ground-truth/exportar"
+        st.markdown(f"[⬇ Descargar ground_truth.csv]({gt_url})")
+        st.caption(
+            "Este CSV contiene todos los fallos etiquetados con diagnóstico IA vs. diagnóstico real. "
+            "Úsalo para entrenar modelos supervisados cuando tengas suficientes registros."
+        )
+
 # ─── SECCIÓN v2: MONITORIZACIÓN EDGE ─────────────────────────────────────────
 # Esta sección es ADITIVA. No modifica ninguna funcionalidad legacy.
 # Requiere que los endpoints /v2/... estén disponibles en la API (Fase 3).
@@ -1085,13 +1203,16 @@ def render_monitorizacion_v2():
         return
 
     # ── Tab layout ────────────────────────────────────────────────────────────
-    tab_maq, tab_resumen, tab_modelos = st.tabs(["📈 Máquina individual", "🏭 Resumen de planta", "🤖 Modelos ML"])
+    tab_maq, tab_resumen, tab_modelos, tab_reporting = st.tabs(["📈 Máquina individual", "🏭 Resumen de planta", "🤖 Modelos ML", "📄 Reporting"])
 
     with tab_resumen:
         _render_resumen_planta()
 
     with tab_modelos:
         _render_modelos_ml()
+
+    with tab_reporting:
+        _render_reporting()
 
     with tab_maq:
         _render_maquina_individual()
