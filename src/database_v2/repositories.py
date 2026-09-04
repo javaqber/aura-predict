@@ -156,13 +156,18 @@ def activar_modelo(model_id: int) -> bool:
 
 
 def obtener_modelo_activo(maquina_id: int) -> Optional[dict]:
-    """Return the active model record for a machine, or None."""
+    """
+    Return the active model record for a machine, or None.
+    Fase 5B: extended to include features_used, model_checksum, empresa_id, is_active.
+    """
     conn = get_conn()
     cur  = conn.cursor()
     try:
         cur.execute("""
-            SELECT id, model_version, algorithm, trained_at, training_samples,
-                   storage_type, model_path, performance_metrics
+            SELECT id, maquina_id, empresa_id, model_version, algorithm,
+                   trained_at, training_samples, contamination,
+                   features_used, storage_type, model_path,
+                   model_checksum, is_active, notes, performance_metrics
             FROM machine_model_registry
             WHERE maquina_id = %s AND is_active = TRUE
         """, (maquina_id,))
@@ -171,14 +176,87 @@ def obtener_modelo_activo(maquina_id: int) -> Optional[dict]:
             return None
         return {
             "id":                  row[0],
-            "model_version":       row[1],
-            "algorithm":           row[2],
-            "trained_at":          row[3],
-            "training_samples":    row[4],
-            "storage_type":        row[5],
-            "model_path":          row[6],
-            "performance_metrics": row[7],
+            "maquina_id":          row[1],
+            "empresa_id":          row[2],
+            "model_version":       row[3],
+            "algorithm":           row[4],
+            "trained_at":          row[5],
+            "training_samples":    row[6],
+            "contamination":       row[7],
+            "features_used":       row[8],
+            "storage_type":        row[9],
+            "model_path":          row[10],
+            "model_checksum":      row[11],
+            "is_active":           row[12],
+            "notes":               row[13],
+            "performance_metrics": row[14],
         }
+    finally:
+        cur.close()
+        conn.close()
+
+
+def obtener_modelos_maquina(maquina_id: int) -> list[dict]:
+    """
+    Return all model versions for a machine ordered by training date (newest first).
+    Used by ModelManager.list_models() and the dashboard model history table.
+    Includes all fields needed for display and rollback decisions.
+    """
+    conn = get_conn()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id, maquina_id, empresa_id, model_version, algorithm,
+                   trained_at, training_samples, contamination,
+                   features_used, storage_type, model_path,
+                   model_checksum, is_active, notes, performance_metrics
+            FROM machine_model_registry
+            WHERE maquina_id = %s
+            ORDER BY trained_at DESC
+        """, (maquina_id,))
+        cols = ["id","maquina_id","empresa_id","model_version","algorithm",
+                "trained_at","training_samples","contamination",
+                "features_used","storage_type","model_path",
+                "model_checksum","is_active","notes","performance_metrics"]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+
+def obtener_modelos_anteriores_maquina(maquina_id: int, excluir_id: Optional[int] = None) -> list[dict]:
+    """
+    Return previous model versions for rollback candidates (newest first).
+    Excludes the model with excluir_id (typically the currently-active failing model).
+    """
+    conn = get_conn()
+    cur  = conn.cursor()
+    try:
+        if excluir_id:
+            cur.execute("""
+                SELECT id, maquina_id, empresa_id, model_version, algorithm,
+                       trained_at, training_samples, contamination,
+                       features_used, storage_type, model_path,
+                       model_checksum, is_active, notes, performance_metrics
+                FROM machine_model_registry
+                WHERE maquina_id = %s AND id != %s
+                ORDER BY trained_at DESC
+            """, (maquina_id, excluir_id))
+        else:
+            cur.execute("""
+                SELECT id, maquina_id, empresa_id, model_version, algorithm,
+                       trained_at, training_samples, contamination,
+                       features_used, storage_type, model_path,
+                       model_checksum, is_active, notes, performance_metrics
+                FROM machine_model_registry
+                WHERE maquina_id = %s AND is_active = FALSE
+                ORDER BY trained_at DESC
+            """, (maquina_id,))
+        cols = ["id","maquina_id","empresa_id","model_version","algorithm",
+                "trained_at","training_samples","contamination",
+                "features_used","storage_type","model_path",
+                "model_checksum","is_active","notes","performance_metrics"]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
     finally:
         cur.close()
         conn.close()

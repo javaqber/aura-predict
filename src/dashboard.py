@@ -885,6 +885,160 @@ def _mantenimiento_recommendation(score, slope, trend) -> str:
         return "🔴 Prioridad alta. Programar inspección técnica inmediata antes de la siguiente producción."
     return "🔴 Estado crítico. Se recomienda detener la máquina e inspeccionar antes de continuar la operación."
 
+
+def _render_modelos_ml():
+    """Dashboard section for Isolation Forest model lifecycle management (Fase 5B)."""
+    st.subheader("🤖 Gestión de Modelos ML")
+    st.caption(
+        "Historial de modelos Isolation Forest entrenados por esta máquina. "
+        "Un único modelo puede estar activo en cada momento."
+    )
+
+    if st.session_state.get("empresa_id") is None:
+        st.warning("Inicia sesión para ver los modelos.")
+        return
+
+    col_id, col_btn = st.columns([3, 1])
+    with col_id:
+        maquina_id = st.number_input(
+            "ID de máquina (maquina_id BD)", min_value=1, value=1, step=1,
+            key="modelos_maquina_id",
+        )
+    with col_btn:
+        st.write("")
+        refresh = st.button("🔄 Actualizar", use_container_width=True, key="btn_modelos")
+
+    if not refresh and "v2_modelos" not in st.session_state:
+        st.info("Pulsa **Actualizar** para cargar los modelos de esta máquina.")
+        return
+
+    if refresh:
+        with st.spinner("Cargando modelos..."):
+            st.session_state["v2_modelos"] = {
+                "activo":    _get_v2(f"/v2/maquinas/{maquina_id}/modelos/activo"),
+                "historial": _get_v2(f"/v2/maquinas/{maquina_id}/modelos"),
+                "maquina_id": maquina_id,
+            }
+
+    data = st.session_state.get("v2_modelos", {})
+    if data.get("maquina_id") != maquina_id:
+        st.info("Pulsa **Actualizar** para cargar los modelos de esta máquina.")
+        return
+
+    # ── Modelo activo ─────────────────────────────────────────────────────────
+    st.subheader("Modelo activo")
+    activo = data.get("activo")
+    if activo is None:
+        st.warning(
+            "⚠️ Sin modelo activo. "
+            "El sistema está en fase de aprendizaje (ZScore) "
+            "hasta acumular suficientes lecturas normales."
+        )
+    else:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Versión",  activo.get("model_version", "—"))
+        c2.metric("Muestras", activo.get("training_samples", "—"))
+        c3.metric("Storage",  activo.get("storage_type", "—"))
+
+        trained_at = activo.get("trained_at", "—")
+        st.caption(f"Entrenado: {str(trained_at)[:19]}")
+
+        features = activo.get("features_used")
+        if features:
+            with st.expander("Features utilizadas"):
+                st.write(features)
+
+        checksum = activo.get("model_checksum")
+        if checksum:
+            st.caption(f"SHA-256: {checksum[:16]}…")
+        else:
+            st.caption("SHA-256: no disponible (modelo local, pendiente de sync)")
+
+    st.divider()
+
+    # ── Historial de modelos ──────────────────────────────────────────────────
+    st.subheader("Historial de versiones")
+    hist_data = data.get("historial")
+    modelos_lista = hist_data.get("modelos", []) if hist_data else []
+
+    if not modelos_lista:
+        st.info("No hay modelos registrados para esta máquina.")
+        return
+
+    import pandas as pd
+    rows = []
+    for m in modelos_lista:
+        rows.append({
+            "ID":       m.get("id", "—"),
+            "Versión":  m.get("model_version", "—"),
+            "Muestras": m.get("training_samples", "—"),
+            "Estado":   "✅ Activo" if m.get("is_active") else "Inactivo",
+            "Storage":  m.get("storage_type", "—"),
+            "Entrenado": str(m.get("trained_at", "—"))[:19],
+            "SHA-256":  (m.get("model_checksum") or "")[:12] + "…" if m.get("model_checksum") else "—",
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── Acciones ──────────────────────────────────────────────────────────────
+    st.subheader("Acciones")
+
+    col_act, col_rb = st.columns(2)
+
+    with col_act:
+        st.markdown("**Activar versión**")
+        model_options = {
+            f"v{m.get('model_version')} (id={m.get('id')})": m.get("id")
+            for m in modelos_lista
+        }
+        selected_label = st.selectbox(
+            "Seleccionar versión", list(model_options.keys()), key="sel_activar"
+        )
+        selected_id = model_options.get(selected_label)
+
+        confirm_act = st.checkbox("Confirmar activación", key="confirm_act")
+        if st.button("✅ Activar modelo", disabled=not confirm_act, key="btn_activar"):
+            with st.spinner("Activando..."):
+                r = _get_v2(f"/v2/maquinas/{maquina_id}/modelos/{selected_id}/activar")
+                # Note: activar needs POST, not GET — use requests.post
+                try:
+                    import requests as _req
+                    r2 = _req.post(
+                        f"{API_BASE_URL}/v2/maquinas/{maquina_id}/modelos/{selected_id}/activar",
+                        headers=_api_headers(), timeout=10,
+                    )
+                    if r2.status_code == 200:
+                        st.success(f"Modelo activado: {r2.json().get('message', 'OK')}")
+                        st.session_state.pop("v2_modelos", None)
+                    else:
+                        st.error(f"Error: {r2.json().get('detail', r2.text)}")
+                except Exception as exc:
+                    st.error(f"Error de conexión: {exc}")
+
+    with col_rb:
+        st.markdown("**Rollback**")
+        st.caption("Activa la última versión válida anterior al modelo activo.")
+        confirm_rb = st.checkbox("Confirmar rollback", key="confirm_rb")
+        if st.button("↩️ Hacer rollback", disabled=not confirm_rb, key="btn_rollback"):
+            current_id = activo.get("id") if activo else 0
+            with st.spinner("Buscando versión anterior válida..."):
+                try:
+                    import requests as _req
+                    r3 = _req.post(
+                        f"{API_BASE_URL}/v2/maquinas/{maquina_id}/modelos/{current_id}/rollback",
+                        headers=_api_headers(), timeout=15,
+                    )
+                    if r3.status_code == 200:
+                        st.success(f"Rollback: {r3.json().get('message', 'OK')}")
+                        st.session_state.pop("v2_modelos", None)
+                    else:
+                        st.error(f"Rollback fallido: {r3.json().get('detail', r3.text)}")
+                except Exception as exc:
+                    st.error(f"Error de conexión: {exc}")
+
 # ─── SECCIÓN v2: MONITORIZACIÓN EDGE ─────────────────────────────────────────
 # Esta sección es ADITIVA. No modifica ninguna funcionalidad legacy.
 # Requiere que los endpoints /v2/... estén disponibles en la API (Fase 3).
@@ -931,10 +1085,13 @@ def render_monitorizacion_v2():
         return
 
     # ── Tab layout ────────────────────────────────────────────────────────────
-    tab_maq, tab_resumen = st.tabs(["📈 Máquina individual", "🏭 Resumen de planta"])
+    tab_maq, tab_resumen, tab_modelos = st.tabs(["📈 Máquina individual", "🏭 Resumen de planta", "🤖 Modelos ML"])
 
     with tab_resumen:
         _render_resumen_planta()
+
+    with tab_modelos:
+        _render_modelos_ml()
 
     with tab_maq:
         _render_maquina_individual()
