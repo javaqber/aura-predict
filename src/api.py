@@ -482,6 +482,11 @@ def activar_modelo_v2(
     model_id:     int,
     current_user: dict = Depends(get_usuario_actual),
 ):
+    # Role check: engineer or admin required to activate models
+    from auth_roles import can_manage_models
+    if not can_manage_models(current_user):
+        raise HTTPException(status_code=403,
+            detail="Se requiere rol engineer o admin para activar modelos")
     """
     Activate a specific model version after passing 5-step validation.
     Validation: file exists, SHA-256, joblib.load, feature compatibility, predict().
@@ -519,6 +524,10 @@ def rollback_modelo_v2(
     model_id:     int,
     current_user: dict = Depends(get_usuario_actual),
 ):
+    from auth_roles import can_manage_models
+    if not can_manage_models(current_user):
+        raise HTTPException(status_code=403,
+            detail="Se requiere rol engineer o admin para hacer rollback")
     """
     Roll back to the latest valid previous model version for a machine.
     Searches previous versions from newest to oldest and activates
@@ -817,3 +826,192 @@ def exportar_ground_truth_v2(
         raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Export error: {exc}")
+
+
+# ─── ENDPOINTS v2 — ESTRUCTURA INDUSTRIAL (Fase 7) ───────────────────────────
+# Empresa → Planta → Línea → Máquina
+
+@app.get("/v2/plantas")
+def get_plantas_v2(current_user: dict = Depends(get_usuario_actual)):
+    """Return all plants for the authenticated user's company."""
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+    try:
+        import sys as _sys
+        _src = os.path.join(os.path.dirname(__file__), '..')
+        if _src not in _sys.path: _sys.path.insert(0, _src)
+        from database_v2.repositories import obtener_plantas
+        plantas = obtener_plantas(empresa_id)
+        return {"empresa_id": empresa_id, "total": len(plantas),
+                "plantas": [{k: str(v) if hasattr(v, "isoformat") else v
+                             for k, v in p.items()} for p in plantas]}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error: {exc}")
+
+
+@app.post("/v2/plantas")
+def crear_planta_v2(datos: dict, current_user: dict = Depends(get_usuario_actual)):
+    """Create a new plant. Admin only."""
+    from auth_roles import is_admin
+    if not is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Solo admin puede crear plantas")
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+    try:
+        from database_v2.repositories import crear_planta
+        new_id = crear_planta(empresa_id, datos.get("nombre",""),
+                              datos.get("descripcion"), datos.get("ubicacion"))
+        return {"success": new_id is not None, "id": new_id}
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Error: {exc}")
+
+
+@app.get("/v2/lineas")
+def get_lineas_v2(planta_id: int = None, current_user: dict = Depends(get_usuario_actual)):
+    """Return production lines, optionally filtered by plant."""
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+    try:
+        from database_v2.repositories import obtener_lineas
+        lineas = obtener_lineas(empresa_id, planta_id=planta_id)
+        return {"empresa_id": empresa_id, "total": len(lineas),
+                "lineas": [{k: str(v) if hasattr(v, "isoformat") else v
+                            for k, v in l.items()} for l in lineas]}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error: {exc}")
+
+
+@app.post("/v2/lineas")
+def crear_linea_v2(datos: dict, current_user: dict = Depends(get_usuario_actual)):
+    """Create a new production line. Admin only."""
+    from auth_roles import is_admin
+    if not is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Solo admin puede crear líneas")
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+    try:
+        from database_v2.repositories import crear_linea
+        new_id = crear_linea(empresa_id, datos.get("nombre",""),
+                             datos.get("planta_id"), datos.get("descripcion"))
+        return {"success": new_id is not None, "id": new_id}
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Error: {exc}")
+
+
+@app.get("/v2/maquinas")
+def get_maquinas_v2(
+    planta_id: int  = None,
+    linea_id:  int  = None,
+    activa:    bool = None,
+    tipo:      str  = None,
+    current_user: dict = Depends(get_usuario_actual),
+):
+    """
+    Return machines with optional filters.
+    Each machine includes its current health score and trend.
+    Supports filtering by plant, line, active status and type.
+    """
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+    try:
+        from database_v2.repositories import obtener_maquinas_filtradas
+        maquinas = obtener_maquinas_filtradas(empresa_id, planta_id=planta_id,
+                                               linea_id=linea_id, activa=activa, tipo=tipo)
+        return {
+            "empresa_id": empresa_id,
+            "total":      len(maquinas),
+            "filtros":    {"planta_id": planta_id, "linea_id": linea_id,
+                           "activa": activa, "tipo": tipo},
+            "maquinas":   [{k: str(v) if hasattr(v, "isoformat") else v
+                            for k, v in m.items()} for m in maquinas],
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error: {exc}")
+
+
+@app.get("/v2/dashboard/kpis")
+def get_dashboard_kpis_v2(current_user: dict = Depends(get_usuario_actual)):
+    """
+    Return plant-level KPI summary for the dashboard overview.
+    Efficient single query: machine counts by health state, 24h anomaly/alert counts.
+    """
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+    try:
+        from database_v2.repositories import obtener_resumen_planta_kpis
+        kpis = obtener_resumen_planta_kpis(empresa_id)
+        return {"empresa_id": empresa_id, "kpis": kpis}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error: {exc}")
+
+
+@app.get("/v2/maquinas/{maquina_id}/detalle")
+def get_maquina_detalle_v2(
+    maquina_id: int,
+    current_user: dict = Depends(get_usuario_actual),
+):
+    """
+    Return full machine detail: health, active model, last anomaly, alert count.
+    Used by the machine detail page in the dashboard.
+    """
+    empresa_id = current_user.get("empresa_id")
+    if empresa_id is None:
+        raise HTTPException(status_code=403, detail="Token sin empresa_id")
+    _verificar_maquina_empresa(maquina_id, empresa_id)
+
+    result = {"maquina_id": maquina_id}
+    try:
+        from database_v2.repositories import (
+            obtener_historial_health, obtener_historial_cnc,
+            obtener_modelo_activo,
+        )
+        # Health
+        health_hist = obtener_historial_health(maquina_id, dias=1)
+        result["health"] = health_hist[0] if health_hist else None
+
+        # Latest readings (last 5)
+        lecturas = obtener_historial_cnc(maquina_id, limite=5)
+        result["ultimas_lecturas"] = lecturas
+
+        # Active model
+        modelo = obtener_modelo_activo(maquina_id)
+        result["modelo_activo"] = {
+            k: str(v) if hasattr(v, "isoformat") else v
+            for k, v in modelo.items()
+        } if modelo else None
+
+        # Recent anomaly count
+        anomalias = [l for l in lecturas if not (l.get("resultado","")).startswith("OK")]
+        result["anomalias_recientes"] = len(anomalias)
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error: {exc}")
+
+
+@app.get("/v2/perfil")
+def get_perfil_v2(current_user: dict = Depends(get_usuario_actual)):
+    """Return current user's profile, role and permissions."""
+    from auth_roles import PERMISSIONS, ROLE_HIERARCHY
+    rol = current_user.get("rol", "")
+    level = ROLE_HIERARCHY.get(rol, 0)
+    # Get permissions for this role level
+    user_perms = set()
+    for r, perms in PERMISSIONS.items():
+        if ROLE_HIERARCHY.get(r, 0) <= level:
+            user_perms |= perms
+    return {
+        "usuario":    current_user.get("nombre"),
+        "email":      current_user.get("sub"),
+        "rol":        rol,
+        "empresa_id": current_user.get("empresa_id"),
+        "permisos":   sorted(user_perms),
+    }

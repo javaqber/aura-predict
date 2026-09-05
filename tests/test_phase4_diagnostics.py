@@ -309,7 +309,8 @@ class TestADXL345Sensor:
         sensor, bus, _ = self._make_sensor(n_samples=5)
         sensor.configure()
         bus.read_i2c_block_data.side_effect = OSError("I2C bus error")
-        with pytest.raises(RuntimeError):
+        from src.edge.sensors.base_sensor import SensorReadError
+        with pytest.raises((SensorReadError, RuntimeError)):
             sensor.read()
 
     def test_close_sets_unconfigured(self):
@@ -445,7 +446,8 @@ class TestRepositories4B:
         import ast
         src = open(
             os.path.join(os.path.dirname(__file__),
-                         "../src/database_v2/repositories.py")
+                         "../src/database_v2/repositories.py"),
+            encoding="utf-8",
         ).read()
         assert "def obtener_todas_maquinas_con_health" in src
 
@@ -453,7 +455,8 @@ class TestRepositories4B:
         import ast
         src = open(
             os.path.join(os.path.dirname(__file__),
-                         "../src/database_v2/repositories.py")
+                         "../src/database_v2/repositories.py"),
+            encoding="utf-8",
         ).read()
         ast.parse(src)
 

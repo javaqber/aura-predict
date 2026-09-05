@@ -1157,6 +1157,96 @@ def _render_reporting():
             "Úsalo para entrenar modelos supervisados cuando tengas suficientes registros."
         )
 
+
+def _render_overview():
+    """Main dashboard overview — Fase 7: global KPIs, machine ranking, filters."""
+    empresa_id = st.session_state.get("empresa_id", 1)
+
+    col_r, _ = st.columns([1, 5])
+    with col_r:
+        refresh = st.button("🔄 Actualizar", key="btn_ov_refresh")
+
+    if refresh or "ov_kpis" not in st.session_state:
+        with st.spinner("Cargando..."):
+            kpi_resp = _get_v2("/v2/dashboard/kpis")
+            maq_resp = _get_v2("/v2/maquinas")
+            st.session_state["ov_kpis"]     = kpi_resp.get("kpis", {}) if kpi_resp else {}
+            st.session_state["ov_maquinas"] = maq_resp.get("maquinas", []) if maq_resp else []
+
+    kpis     = st.session_state.get("ov_kpis", {})
+    maquinas = st.session_state.get("ov_maquinas", [])
+
+    # KPI cards
+    st.subheader("Indicadores globales")
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    c1.metric("Máquinas",    kpis.get("total_machines", "—"))
+    c2.metric("🟢 Sanas",    kpis.get("healthy", 0))
+    c3.metric("🟡 Vigilar",  kpis.get("watch",   0))
+    c4.metric("🟠 Alerta",   kpis.get("alert",   0))
+    c5.metric("🔴 Críticas", kpis.get("critical",0))
+    avg = kpis.get("avg_health")
+    c6.metric("Health medio", f"{avg}/100" if avg is not None else "—")
+    c7.metric("⚠️ Anomalías 24h", kpis.get("anomalies_24h", 0))
+
+    st.divider()
+
+    # Filters
+    st.subheader("Filtros")
+    cf1, cf2, cf3 = st.columns(3)
+    with cf1:
+        plantas_r = _get_v2("/v2/plantas") or {}
+        plt_opts  = {"Todas": None}
+        plt_opts.update({p["nombre"]: p["id"] for p in plantas_r.get("plantas", [])})
+        sel_plt   = st.selectbox("Planta", list(plt_opts.keys()), key="ov_plt")
+    with cf2:
+        estado_opts = ["Todos","🔴 Crítico","🟠 Alerta","🟡 Vigilar","🟢 Sano","Sin datos"]
+        sel_estado  = st.selectbox("Estado", estado_opts, key="ov_estado")
+    with cf3:
+        tipo_opts = ["Todos","torno_cnc","centro_mecanizado","fresadora_cnc","prensa","otro"]
+        sel_tipo  = st.selectbox("Tipo", tipo_opts, key="ov_tipo")
+
+    estado_ranges = {"🔴 Crítico":(0,25),"🟠 Alerta":(25,50),"🟡 Vigilar":(50,75),"🟢 Sano":(75,101)}
+
+    maq_filtradas = list(maquinas)
+    if plt_opts[sel_plt]:
+        maq_filtradas = [m for m in maq_filtradas if m.get("planta_id") == plt_opts[sel_plt]]
+    if sel_estado != "Todos":
+        if sel_estado == "Sin datos":
+            maq_filtradas = [m for m in maq_filtradas if m.get("health_score") is None]
+        else:
+            lo, hi = estado_ranges[sel_estado]
+            maq_filtradas = [m for m in maq_filtradas
+                             if m.get("health_score") is not None
+                             and lo <= m["health_score"] < hi]
+    if sel_tipo != "Todos":
+        maq_filtradas = [m for m in maq_filtradas if m.get("tipo") == sel_tipo]
+
+    st.divider()
+
+    # Machine ranking
+    st.subheader(f"Ranking de máquinas ({len(maq_filtradas)} mostradas)")
+    if not maq_filtradas:
+        st.info("Sin máquinas que coincidan con los filtros.")
+        return
+
+    maq_sorted = sorted(maq_filtradas,
+                        key=lambda m: m.get("health_score") if m.get("health_score") is not None else 999)
+
+    import pandas as pd
+    rows = []
+    for m in maq_sorted:
+        sc = m.get("health_score")
+        rows.append({
+            "Máquina":   m.get("nombre","—"),
+            "Tipo":      m.get("tipo","—"),
+            "Planta":    m.get("planta_nombre") or "—",
+            "Health":    f"{sc}/100" if sc is not None else "Sin datos",
+            "Estado":    _health_label(sc),
+            "Tendencia": m.get("trend") or "—",
+            "Última actualización": str(m.get("health_timestamp",""))[:16] or "—",
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
 # ─── SECCIÓN v2: MONITORIZACIÓN EDGE ─────────────────────────────────────────
 # Esta sección es ADITIVA. No modifica ninguna funcionalidad legacy.
 # Requiere que los endpoints /v2/... estén disponibles en la API (Fase 3).
@@ -1195,15 +1285,20 @@ def _health_label(score) -> str:
 
 
 def render_monitorizacion_v2():
-    """Dashboard section for the Edge monitoring system — Fase 3/4."""
-    st.header("📊 Monitorización v2 — Sistema Edge")
+    """Dashboard section for the Edge monitoring system — Fase 7 enhanced."""
+    st.header("📊 AuraPredict — Centro de Control Industrial")
 
     if st.session_state.get("empresa_id") is None:
         st.warning("Inicia sesión para ver los datos.")
         return
 
     # ── Tab layout ────────────────────────────────────────────────────────────
-    tab_maq, tab_resumen, tab_modelos, tab_reporting = st.tabs(["📈 Máquina individual", "🏭 Resumen de planta", "🤖 Modelos ML", "📄 Reporting"])
+    tab_overview, tab_maq, tab_resumen, tab_modelos, tab_reporting = st.tabs(
+        ["🏠 Visión general", "📈 Máquina individual", "🏭 Resumen de planta",
+         "🤖 Modelos ML", "📄 Reporting"])
+
+    with tab_overview:
+        _render_overview()
 
     with tab_resumen:
         _render_resumen_planta()

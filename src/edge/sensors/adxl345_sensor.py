@@ -74,8 +74,13 @@ REG_BW_RATE     = 0x2C
 REG_POWER_CTL   = 0x2D
 REG_DATA_FORMAT = 0x31
 REG_DATAX0      = 0x32
+REG_INT_SOURCE  = 0x30    # Interrupt source register — bit 7 = DATA_READY
 
 DEVID_EXPECTED  = 0xE5     # Factory identifier, confirms correct device
+
+# Maximum read-loop time budget: if exceeded, data is discarded.
+# Set to 3× the expected window duration (generous for slow I2C or slow Pi).
+_MAX_READ_TIME_MULTIPLIER = 3.0
 
 # ODR register values → sample rate in Hz
 _ODR_MAP: dict[int, float] = {
@@ -223,47 +228,110 @@ class ADXL345Sensor(SensorInterface):
         Acquire one window of vibration data from the ADXL345.
 
         Reads `config.samples_per_window` samples sequentially.
-        Each sample requires 6 bytes (2 per axis: LSB then MSB).
-        Timestamps are interpolated from the wall clock over the window.
+        Each sample: 6 bytes from DATAX0 (X LSB, X MSB, Y LSB, Y MSB, Z LSB, Z MSB).
+        Timestamps: wall-clock time recorded per sample.
+
+        DATA_READY check (optional, config.extra["check_data_ready"] = True):
+            Reads INT_SOURCE register (0x30) before each sample.
+            If bit 7 is not set, waits up to 2× the expected sample period.
+            Reduces duplicate-sample risk at high ODR (1600/3200 Hz).
+            Off by default — most Python loops are slower than ODR anyway.
+
+        Timeout guard:
+            If the total read time exceeds 3× the expected window duration,
+            the acquisition is aborted and SensorReadError is raised.
+            Prevents hanging when I2C bus locks between samples.
+            (Individual I2C transactions are protected by the kernel timeout.)
 
         Returns:
             SensorReading with axes {'x': arr, 'y': arr, 'z': arr} in g.
 
         Raises:
             SensorConfigurationError: if configure() has not been called.
-            RuntimeError: if I2C read fails.
+            SensorReadError: if I2C read fails or timeout exceeded.
         """
+        from .base_sensor import SensorReadError
+
         if not self._configured:
             raise SensorConfigurationError(
                 "ADXL345Sensor.configure() must be called before read()."
             )
 
-        n_samples = self._config.samples_per_window
-        axes_data = {"x": np.empty(n_samples, dtype=np.float64),
-                     "y": np.empty(n_samples, dtype=np.float64),
-                     "z": np.empty(n_samples, dtype=np.float64)}
+        n_samples         = self._config.samples_per_window
+        check_data_ready  = bool(self._config.extra.get("check_data_ready", False))
+        expected_period_s = 1.0 / max(self._config.sampling_rate_hz, 1.0)
+        expected_window_s = n_samples * expected_period_s
+        deadline          = time.monotonic() + expected_window_s * _MAX_READ_TIME_MULTIPLIER
 
-        t_start    = time.time()
+        axes_data  = {"x": np.empty(n_samples, dtype=np.float64),
+                      "y": np.empty(n_samples, dtype=np.float64),
+                      "z": np.empty(n_samples, dtype=np.float64)}
         timestamps = np.empty(n_samples, dtype=np.float64)
+        t_start    = time.time()
+        i          = 0
 
         try:
             for i in range(n_samples):
+                # ── Timeout guard ─────────────────────────────────────────────
+                if time.monotonic() > deadline:
+                    raise SensorReadError(
+                        f"ADXL345 read timeout after {i} of {n_samples} samples "
+                        f"(deadline {expected_window_s * _MAX_READ_TIME_MULTIPLIER:.1f}s exceeded). "
+                        "Possible I2C bus issue."
+                    )
+
+                # ── DATA_READY check (optional) ───────────────────────────────
+                if check_data_ready:
+                    int_src = self._bus.read_i2c_block_data(
+                        self._addr, REG_INT_SOURCE, 1
+                    )[0]
+                    if not (int_src & 0x80):
+                        # DATA_READY not set — wait up to 2 sample periods
+                        wait_deadline = time.monotonic() + expected_period_s * 2
+                        while not (self._bus.read_i2c_block_data(
+                                self._addr, REG_INT_SOURCE, 1)[0] & 0x80):
+                            if time.monotonic() > wait_deadline:
+                                logger.debug(
+                                    "ADXL345: DATA_READY timeout at sample %d — "
+                                    "reading anyway (normal at rates > Python loop speed)",
+                                    i,
+                                )
+                                break
+
+                # ── Sample read ───────────────────────────────────────────────
                 t_sample = time.time()
                 raw = self._bus.read_i2c_block_data(self._addr, REG_DATAX0, 6)
-                # Each axis: two's complement 16-bit value, LSB first
-                ax = self._to_signed16(raw[0], raw[1]) * self._scale
-                ay = self._to_signed16(raw[2], raw[3]) * self._scale
-                az = self._to_signed16(raw[4], raw[5]) * self._scale
-                axes_data["x"][i] = ax
-                axes_data["y"][i] = ay
-                axes_data["z"][i] = az
+                # Two's complement 16-bit, LSB first (ADXL345 datasheet Section 3.3)
+                axes_data["x"][i] = self._to_signed16(raw[0], raw[1]) * self._scale
+                axes_data["y"][i] = self._to_signed16(raw[2], raw[3]) * self._scale
+                axes_data["z"][i] = self._to_signed16(raw[4], raw[5]) * self._scale
                 timestamps[i]     = t_sample
+
+        except SensorReadError:
+            raise
+        except SensorConfigurationError:
+            raise
         except Exception as exc:
-            logger.error("ADXL345 read error at sample %d: %s", i, exc)
-            raise RuntimeError(f"ADXL345 read error: {exc}") from exc
+            logger.error(
+                "ADXL345 I2C read error at sample %d/%d: %s: %s",
+                i, n_samples, type(exc).__name__, exc
+            )
+            raise SensorReadError(
+                f"ADXL345 I2C error at sample {i}/{n_samples}: {exc}"
+            ) from exc
 
         t_end = time.time()
-        actual_rate = (n_samples - 1) / (t_end - t_start) if t_end > t_start else None
+        elapsed = t_end - t_start
+        actual_rate = (n_samples - 1) / elapsed if elapsed > 0 else None
+
+        # Warn if actual rate is significantly below configured (Python loop overhead)
+        if actual_rate is not None and actual_rate < self._config.sampling_rate_hz * 0.5:
+            logger.warning(
+                "ADXL345 actual read rate %.0f Hz is < 50%% of configured %.0f Hz. "
+                "Python loop overhead limits achievable rate. "
+                "Consider reducing odr_hz or samples_per_window in config.",
+                actual_rate, self._config.sampling_rate_hz,
+            )
 
         return SensorReading(
             timestamp_start          = t_start,
@@ -275,10 +343,13 @@ class ADXL345Sensor(SensorInterface):
             sensor_id                = self._config.sensor_id,
             sensor_type              = "adxl345",
             metadata                 = {
-                "i2c_address":  hex(self._addr),
-                "scale_factor": self._scale,
-                "odr_register": hex(self._odr_reg),
+                "i2c_address":    hex(self._addr),
+                "scale_factor":   self._scale,
+                "odr_register":   hex(self._odr_reg),
                 "range_register": hex(self._range_reg),
+                "check_data_ready": check_data_ready,
+                "elapsed_s":      round(elapsed, 3),
+                "actual_rate_hz": round(actual_rate, 1) if actual_rate else None,
             },
         )
 

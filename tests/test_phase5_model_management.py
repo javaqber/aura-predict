@@ -374,21 +374,24 @@ class TestRepositoriesModels:
         import ast
         src = open(
             os.path.join(os.path.dirname(__file__),
-                         "../src/database_v2/repositories.py")
+                         "../src/database_v2/repositories.py"),
+            encoding="utf-8",
         ).read()
         assert "def obtener_modelos_maquina" in src
 
     def test_obtener_modelos_anteriores_exists(self):
         src = open(
             os.path.join(os.path.dirname(__file__),
-                         "../src/database_v2/repositories.py")
+                         "../src/database_v2/repositories.py"),
+            encoding="utf-8",
         ).read()
         assert "def obtener_modelos_anteriores_maquina" in src
 
     def test_obtener_modelo_activo_returns_more_columns(self):
         src = open(
             os.path.join(os.path.dirname(__file__),
-                         "../src/database_v2/repositories.py")
+                         "../src/database_v2/repositories.py"),
+            encoding="utf-8",
         ).read()
         # Must select features_used and model_checksum
         assert "features_used" in src
@@ -398,7 +401,8 @@ class TestRepositoriesModels:
         import ast
         src = open(
             os.path.join(os.path.dirname(__file__),
-                         "../src/database_v2/repositories.py")
+                         "../src/database_v2/repositories.py"),
+            encoding="utf-8",
         ).read()
         ast.parse(src)
 

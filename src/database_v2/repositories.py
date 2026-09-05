@@ -791,6 +791,206 @@ def obtener_todas_maquinas_con_health(empresa_id: Optional[int] = None) -> list[
         cur.close()
         conn.close()
 
+
+# ─── ESTRUCTURA INDUSTRIAL: PLANTAS Y LÍNEAS (Fase 7) ────────────────────────
+
+def crear_planta(empresa_id: int, nombre: str,
+                 descripcion: Optional[str] = None,
+                 ubicacion: Optional[str] = None) -> Optional[int]:
+    """Create a new plant. Returns the new id."""
+    conn = get_conn()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO plantas (empresa_id, nombre, descripcion, ubicacion)
+            VALUES (%s, %s, %s, %s) RETURNING id
+        """, (empresa_id, nombre, descripcion, ubicacion))
+        conn.commit()
+        row = cur.fetchone()
+        return row[0] if row else None
+    except Exception as exc:
+        conn.rollback()
+        print(f"[repositories] crear_planta failed: {exc}")
+        return None
+    finally:
+        cur.close()
+        conn.close()
+
+
+def obtener_plantas(empresa_id: int) -> list[dict]:
+    """Return all plants for a company."""
+    conn = get_conn()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id, nombre, descripcion, ubicacion, activa, created_at
+            FROM plantas
+            WHERE empresa_id = %s
+            ORDER BY nombre
+        """, (empresa_id,))
+        cols = ["id","nombre","descripcion","ubicacion","activa","created_at"]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+
+def crear_linea(empresa_id: int, nombre: str,
+                planta_id: Optional[int] = None,
+                descripcion: Optional[str] = None) -> Optional[int]:
+    """Create a new production line. Returns the new id."""
+    conn = get_conn()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO lineas (empresa_id, planta_id, nombre, descripcion)
+            VALUES (%s, %s, %s, %s) RETURNING id
+        """, (empresa_id, planta_id, nombre, descripcion))
+        conn.commit()
+        row = cur.fetchone()
+        return row[0] if row else None
+    except Exception as exc:
+        conn.rollback()
+        print(f"[repositories] crear_linea failed: {exc}")
+        return None
+    finally:
+        cur.close()
+        conn.close()
+
+
+def obtener_lineas(empresa_id: int,
+                   planta_id: Optional[int] = None) -> list[dict]:
+    """Return all production lines for a company, optionally filtered by plant."""
+    conn = get_conn()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT l.id, l.nombre, l.descripcion, l.planta_id,
+                   p.nombre AS planta_nombre, l.activa, l.created_at
+            FROM lineas l
+            LEFT JOIN plantas p ON p.id = l.planta_id
+            WHERE l.empresa_id = %s
+              AND (%s IS NULL OR l.planta_id = %s)
+            ORDER BY l.nombre
+        """, (empresa_id, planta_id, planta_id))
+        cols = ["id","nombre","descripcion","planta_id","planta_nombre","activa","created_at"]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+
+def obtener_maquinas_filtradas(
+    empresa_id: int,
+    planta_id:  Optional[int] = None,
+    linea_id:   Optional[int] = None,
+    activa:     Optional[bool] = None,
+    tipo:       Optional[str]  = None,
+) -> list[dict]:
+    """
+    Return machines with filtering by plant, line, status and type.
+    Includes current health score for each machine (Fase 7 dashboard).
+    """
+    conn = get_conn()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT m.id, m.nombre, m.tipo, m.descripcion, m.ubicacion,
+                   m.empresa_id, m.planta_id, m.linea_id, m.activa, m.notas,
+                   p.nombre AS planta_nombre,
+                   l.nombre AS linea_nombre,
+                   hs.score AS health_score,
+                   hs.trend, hs.slope,
+                   hs.timestamp AS health_timestamp
+            FROM maquinas m
+            LEFT JOIN plantas p ON p.id = m.planta_id
+            LEFT JOIN lineas  l ON l.id = m.linea_id
+            LEFT JOIN LATERAL (
+                SELECT score, trend, slope, timestamp
+                FROM health_scores
+                WHERE maquina_id = m.id
+                ORDER BY timestamp DESC
+                LIMIT 1
+            ) hs ON true
+            WHERE m.empresa_id = %s
+              AND (%s IS NULL OR m.planta_id = %s)
+              AND (%s IS NULL OR m.linea_id  = %s)
+              AND (%s IS NULL OR m.activa    = %s)
+              AND (%s IS NULL OR m.tipo      = %s)
+            ORDER BY m.nombre
+        """, (empresa_id,
+              planta_id, planta_id,
+              linea_id,  linea_id,
+              activa,    activa,
+              tipo,      tipo))
+        cols = ["id","nombre","tipo","descripcion","ubicacion","empresa_id",
+                "planta_id","linea_id","activa","notas",
+                "planta_nombre","linea_nombre",
+                "health_score","trend","slope","health_timestamp"]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+
+def obtener_resumen_planta_kpis(empresa_id: int) -> dict:
+    """
+    Return plant-level KPIs for the dashboard overview (Fase 7).
+    Single query — efficient for the main dashboard page.
+    """
+    conn = get_conn()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            WITH latest_health AS (
+                SELECT DISTINCT ON (maquina_id) maquina_id, score, trend
+                FROM health_scores
+                WHERE maquina_id IN (
+                    SELECT id FROM maquinas WHERE empresa_id = %s AND activa = TRUE
+                )
+                ORDER BY maquina_id, timestamp DESC
+            ),
+            anomaly_counts AS (
+                SELECT COUNT(*) FILTER (WHERE resultado NOT LIKE 'OK%%') AS n_anomalies
+                FROM lecturas_cnc_v2
+                WHERE empresa_id = %s
+                  AND timestamp >= NOW() - INTERVAL '24 hours'
+            ),
+            alert_counts AS (
+                SELECT COUNT(*) AS n_alerts
+                FROM alert_log
+                WHERE empresa_id = %s
+                  AND sent_at >= NOW() - INTERVAL '24 hours'
+            )
+            SELECT
+                COUNT(m.id)                                             AS total_machines,
+                COUNT(lh.score) FILTER (WHERE lh.score >= 75)          AS healthy,
+                COUNT(lh.score) FILTER (WHERE lh.score >= 50
+                                          AND lh.score < 75)           AS watch,
+                COUNT(lh.score) FILTER (WHERE lh.score >= 25
+                                          AND lh.score < 50)           AS alert,
+                COUNT(lh.score) FILTER (WHERE lh.score < 25)           AS critical,
+                COUNT(lh.score) FILTER (WHERE lh.score IS NULL)        AS no_data,
+                ROUND(AVG(lh.score)::numeric, 1)                       AS avg_health,
+                (SELECT n_anomalies FROM anomaly_counts)                AS anomalies_24h,
+                (SELECT n_alerts    FROM alert_counts)                  AS alerts_24h
+            FROM maquinas m
+            LEFT JOIN latest_health lh ON lh.maquina_id = m.id
+            WHERE m.empresa_id = %s AND m.activa = TRUE
+        """, (empresa_id, empresa_id, empresa_id, empresa_id))
+        row = cur.fetchone()
+        if not row:
+            return {}
+        cols = ["total_machines","healthy","watch","alert","critical","no_data",
+                "avg_health","anomalies_24h","alerts_24h"]
+        return dict(zip(cols, row))
+    except Exception as exc:
+        print(f"[repositories] obtener_resumen_planta_kpis failed: {exc}")
+        return {}
+    finally:
+        cur.close()
+        conn.close()
+
 # ─── MAINTENANCE EVENTS ───────────────────────────────────────────────────────
 
 def registrar_mantenimiento(

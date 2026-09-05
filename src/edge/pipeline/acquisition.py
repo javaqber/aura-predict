@@ -82,11 +82,17 @@ class AcquisitionSession:
 
         for axis in reading.available_axes:
             signal = reading.axes[axis]
+            # Use actual configured sensor range (not the generic ±16g default).
+            # range_g from YAML (e.g. 2 → ±2g); add 5% headroom for calibration offsets.
+            sensor_range_g = float(cfg.sensor.extra.get("range_g", 16))
+            phys_range = (-sensor_range_g * 1.05, sensor_range_g * 1.05)
+
             qr = check_signal_quality(
-                signal        = signal,
-                configured_hz = reading.sampling_rate_configured,
-                timestamps    = reading.timestamps,
-                odr_hz        = cfg.sensor.odr_hz,
+                signal             = signal,
+                configured_hz      = reading.sampling_rate_configured,
+                timestamps         = reading.timestamps,
+                odr_hz             = cfg.sensor.odr_hz,
+                expected_range_g   = phys_range,
             )
             quality_per_axis[axis] = qr
 

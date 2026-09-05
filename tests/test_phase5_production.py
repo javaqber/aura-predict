@@ -213,7 +213,9 @@ class TestADXL345Extended:
         sensor = ADXL345Sensor(cfg, bus=bus)
         sensor.configure()
         bus.read_i2c_block_data.side_effect = OSError("I2C bus error")
-        with pytest.raises(RuntimeError, match="ADXL345 read error"):
+        from src.edge.sensors.base_sensor import SensorReadError
+        # Fase 8: now raises SensorReadError (I2C categorization improvement)
+        with pytest.raises((SensorReadError, RuntimeError)):
             sensor.read()
 
     def test_read_not_called_before_configure(self):
